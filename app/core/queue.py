@@ -17,7 +17,13 @@ class InMemoryJobQueue:
 
     def dequeue(self) -> UUID | None:
         """O(1) — remove from left end. Returns None if empty."""
-        self._queue.popleft()
+        if not self._queue:
+            return None
+        return self._queue.popleft()
+
+    def clear(self) -> None:
+        """Remove all queued job IDs. Useful for tests."""
+        self._queue.clear()
 
     def size(self) -> int:
         """O(1)."""
