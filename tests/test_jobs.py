@@ -1,24 +1,8 @@
-import pytest
-from fastapi.testclient import TestClient
 from uuid import UUID
 
-from app.core.database import Base, engine
 from app.core.queue import job_queue
-from app.main import app as fastapi_app
-from app.core.database import SessionLocal
-from app.services.job_service import job_service
 from app.models.job import JobStatus
-
-
-@pytest.fixture
-def client():
-    import app.models  # noqa: F401 — register models; do not bind as `app` (shadows FastAPI app)
-
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    job_queue.clear()
-
-    return TestClient(fastapi_app)
+from app.services.job_service import job_service
 
 
 def test_create_job_returns_pending(client):
@@ -118,23 +102,19 @@ def test_list_jobs(client):
     assert {job["job_type"] for job in data["jobs"]} == {"summarization", "ocr"}
 
 
-def test_update_job_status_persists(client):
+def test_update_job_status_persists(client, db_session):
     create = client.post(
         "/jobs",
         json={"job_type": "summarization", "input": {"text": "hello"}},
     )
     job_id = create.json()["id"]
 
-    db = SessionLocal()
-    try:
-        job_service.update_job_status(
-            db,
-            job_id=job_id,
-            status=JobStatus.COMPLETED,
-            result_payload={"result": "done"},
-        )
-    finally:
-        db.close()
+    job_service.update_job_status(
+        db_session,
+        job_id=job_id,
+        status=JobStatus.COMPLETED,
+        result_payload={"result": "done"},
+    )
 
     response = client.get(f"/jobs/{job_id}")
     data = response.json()
