@@ -61,7 +61,7 @@ def test_create_job_enqueues_correct_id(client):
     job_id = response.json()["id"]
 
     assert job_queue.size() == before + 1
-    assert UUID(job_id) in job_queue._queue  # assumes internal list storage
+    assert job_queue.peek() == UUID(job_id)
 
 
 def test_get_job_not_found(client):

@@ -4,13 +4,16 @@ from fastapi import FastAPI
 
 from app.api.jobs import router as jobs_router
 from app.core.database import init_db
+from app.workers.local_worker import local_worker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    local_worker.start() # start the worker
     yield
     print("Server shutting down")  # shutdown
+    local_worker.stop() # stop the worker
 
 
 app = FastAPI(

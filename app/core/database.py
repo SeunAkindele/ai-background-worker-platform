@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -21,9 +23,23 @@ def get_db():
         db.close()
 
 
+@contextmanager
+def db_session():
+    """
+    Context manager for worker / scripts.
+    Commits on success, rolls back on error, always closes.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def init_db():
-    """Create tables. For Stage 1, calling this on startup is fine."""
-    # Import all models so SQLAlchemy can register metadata
     import app.models
     Base.metadata.create_all(bind=engine)
-    

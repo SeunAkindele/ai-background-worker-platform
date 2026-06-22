@@ -24,6 +24,20 @@ class JobType(str, enum.Enum):
     RECOMMENDATIONS = "recommendations"
 
 
+class JobPriority(str, enum.Enum):
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
+# Lower number = higher priority (used by heapq min-heap)
+PRIORITY_RANK: dict[JobPriority, int] = {
+    JobPriority.HIGH: 0,
+    JobPriority.NORMAL: 1,
+    JobPriority.LOW: 2,
+}
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -33,6 +47,9 @@ class Job(Base):
     job_type: Mapped[JobType] = mapped_column(Enum(JobType), nullable=False)
     status: Mapped[JobStatus] = mapped_column(
         Enum(JobStatus), nullable=False, default=JobStatus.PENDING
+    )
+    priority: Mapped[JobPriority] = mapped_column(
+        Enum(JobPriority), nullable=False, default=JobPriority.NORMAL
     )
     input_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     result_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -46,4 +63,3 @@ class Job(Base):
         onupdate=func.now(),
         nullable=False,
     )
-    

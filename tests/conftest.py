@@ -23,6 +23,7 @@ import app.models  # noqa: F401 — register models; do not bind as `app`
 from app.core.database import Base, SessionLocal, engine
 from app.core.queue import job_queue
 from app.main import app as fastapi_app
+from app.workers.local_worker import local_worker
 
 
 @pytest.fixture
@@ -31,7 +32,12 @@ def client():
     Base.metadata.create_all(bind=engine)
     job_queue.clear()
 
-    return TestClient(fastapi_app)
+    local_worker.stop()
+    local_worker.start()
+
+    yield TestClient(fastapi_app)
+
+    local_worker.stop()
 
 
 @pytest.fixture
@@ -41,3 +47,10 @@ def db_session():
         yield db
     finally:
         db.close()
+
+# After tests, optional:
+@pytest.fixture(autouse=True)
+def reset_queue(client):
+    job_queue.clear()
+    yield
+    job_queue.clear()

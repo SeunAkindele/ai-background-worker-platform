@@ -20,11 +20,18 @@ class JobService:
             job_type=payload.job_type,
             input_payload=payload.input,
             status=JobStatus.PENDING,
+            priority=payload.priority,
         )
         db.add(job)
         db.commit()
         db.refresh(job)
-        job_queue.enqueue(job.id)
+        
+        job_queue.enqueue(
+            job.id,
+            priority=job.priority,
+            created_at=job.created_at,
+        )
+    
         return JobResponse.model_validate(job)
 
     def get_job(self, db: Session, job_id: UUID) -> JobResponse | None:
@@ -48,7 +55,7 @@ class JobService:
         status: JobStatus,
         result_payload: dict | None = None,
         error_message: str | None = None,
-    ) -> Job | None:
+    ) -> JobResponse:
         """
         You'll use this heavily in Stage 2 (worker updates status).
         Implement it now so Stage 2 is easy.
