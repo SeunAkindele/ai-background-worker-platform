@@ -33,11 +33,5 @@ def health():
 
 @app.get("/admin/queues")
 def queue_stats():
-    from app.core.redis_client import redis_client
-    from app.core.queue import FAILED_KEY, PENDING_KEY, PROCESSING_KEY, RETRY_KEY
-    return {
-        "pending": redis_client.zcard(PENDING_KEY),
-        "processing": redis_client.llen(PROCESSING_KEY),
-        "retry": redis_client.llen(RETRY_KEY),
-        "failed": redis_client.llen(FAILED_KEY),
-    }
+    from app.core.queue import job_queue
+    return job_queue.stats()

@@ -93,9 +93,27 @@ class RedisJobQueue:
     def processing_size(self) -> int:
         return self._redis.llen(PROCESSING_KEY)
 
+    def retry_size(self) -> int:
+        return self._redis.llen(RETRY_KEY)
+
+    def failed_size(self) -> int:
+        return self._redis.llen(FAILED_KEY)
+
+    def stats(self) -> dict[str, int]:
+        return {
+            "pending": self.size(),
+            "processing": self.processing_size(),
+            "retry": self.retry_size(),
+            "failed": self.failed_size(),
+        }
+
     def clear(self) -> None:
         """Tests only — wipe all queue keys."""
         self._redis.delete(PENDING_KEY, PROCESSING_KEY, RETRY_KEY, FAILED_KEY)
+
+    def peek(self) -> UUID | None:
+        items = self._redis.zrange(PENDING_KEY, 0, 0)
+        return UUID(items[0]) if items else None
 
 
 job_queue = RedisJobQueue()
