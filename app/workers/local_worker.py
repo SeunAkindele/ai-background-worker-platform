@@ -48,7 +48,7 @@ class LocalWorker:
             if job_id is None:
                 time.sleep(self._poll_interval)
                 continue
-            yield job_id
+            yield job_id # yield the job_id to the main loop so the app pauses for memory management
 
     def _run(self) -> None:
         """Main loop — runs in background thread."""
