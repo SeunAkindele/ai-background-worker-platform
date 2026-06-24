@@ -6,11 +6,12 @@ Communicates only via Redis + PostgreSQL.
 """
 import logging
 import signal
+import threading
 import time
 from uuid import UUID
 
 from app.core.database import db_session, init_db
-from app.core.queue import job_queue
+from app.core import queue as queue_module
 from app.models.job import JobStatus
 from app.services.job_service import job_service
 from app.workers.decorators import log_execution_time
@@ -31,7 +32,7 @@ class RedisWorker:
 
     def _iter_jobs(self):
         while self._running:
-            job_id = job_queue.dequeue()
+            job_id = queue_module.job_queue.dequeue()
             if job_id is None:
                 time.sleep(self._poll_interval)
                 continue
@@ -39,8 +40,9 @@ class RedisWorker:
 
     def run(self) -> None:
         init_db()
-        signal.signal(signal.SIGINT, self.stop)
-        signal.signal(signal.SIGTERM, self.stop)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, self.stop)
+            signal.signal(signal.SIGTERM, self.stop)
         logger.info("Initializing Redis worker")
 
         for job_id in self._iter_jobs():
@@ -55,12 +57,12 @@ class RedisWorker:
             job = job_service.get_job(db, job_id)
             if not job:
                 logger.warning("Job %s not found", job_id)
-                job_queue.acknowledge(job_id)
+                queue_module.job_queue.acknowledge(job_id)
                 return
 
             if job.status != JobStatus.PENDING:
                 logger.warning("Job %s skipped — status %s", job_id, job.status)
-                job_queue.acknowledge(job_id)
+                queue_module.job_queue.acknowledge(job_id)
                 return
 
             job_service.update_job_status(db, job_id, JobStatus.PROCESSING)
@@ -72,13 +74,13 @@ class RedisWorker:
                 job_service.update_job_status(
                     db, job_id, JobStatus.FAILED, error_message=str(exc),
                 )
-                job_queue.move_to_failed(job_id)
+                queue_module.job_queue.move_to_failed(job_id)
                 return
 
             job_service.update_job_status(
                 db, job_id, JobStatus.COMPLETED, result_payload=result,
             )
-            job_queue.acknowledge(job_id)
+            queue_module.job_queue.acknowledge(job_id)
 
 
 def main() -> None:

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from app.core.queue import job_queue
+from app.core import queue as queue_module
 from app.models.job import JobStatus
 from app.services.job_service import job_service
 
@@ -41,17 +41,17 @@ def test_get_job_success(client):
 
 
 def test_create_job_enqueues(client):
-    before = job_queue.size()
+    before = queue_module.job_queue.size()
     response = client.post(
         "/jobs",
         json={"job_type": "ocr", "input": {"image_url": "http://example.com/a.png"}},
     )
     assert response.status_code == 201
-    assert job_queue.size() == before + 1
+    assert queue_module.job_queue.size() == before + 1
 
 
 def test_create_job_enqueues_correct_id(client):
-    before = job_queue.size()
+    before = queue_module.job_queue.size()
 
     response = client.post(
         "/jobs",
@@ -60,8 +60,8 @@ def test_create_job_enqueues_correct_id(client):
 
     job_id = response.json()["id"]
 
-    assert job_queue.size() == before + 1
-    assert job_queue.peek() == UUID(job_id)
+    assert queue_module.job_queue.size() == before + 1
+    assert queue_module.job_queue.peek() == UUID(job_id)
 
 
 def test_get_job_not_found(client):
