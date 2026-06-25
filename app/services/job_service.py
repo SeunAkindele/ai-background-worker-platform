@@ -2,7 +2,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.core.queue import job_queue
+from app.core import queue as queue_module
 from app.models.job import Job, JobStatus
 from app.schemas.job_schema import JobCreate, JobResponse, JobListResponse
 
@@ -20,11 +20,18 @@ class JobService:
             job_type=payload.job_type,
             input_payload=payload.input,
             status=JobStatus.PENDING,
+            priority=payload.priority,
         )
         db.add(job)
         db.commit()
         db.refresh(job)
-        job_queue.enqueue(job.id)
+        
+        queue_module.job_queue.enqueue(
+            job.id,
+            priority=job.priority,
+            created_at=job.created_at,
+        )
+    
         return JobResponse.model_validate(job)
 
     def get_job(self, db: Session, job_id: UUID) -> JobResponse | None:
@@ -48,7 +55,7 @@ class JobService:
         status: JobStatus,
         result_payload: dict | None = None,
         error_message: str | None = None,
-    ) -> Job | None:
+    ) -> JobResponse:
         """
         You'll use this heavily in Stage 2 (worker updates status).
         Implement it now so Stage 2 is easy.

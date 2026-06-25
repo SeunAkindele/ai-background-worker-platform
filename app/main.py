@@ -24,4 +24,14 @@ app.include_router(jobs_router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    from app.core.queue import job_queue
+    return {
+        "status": "ok",
+        "pending_jobs": job_queue.size(),
+        "processing_jobs": job_queue.processing_size(),
+    }
+
+@app.get("/admin/queues")
+def queue_stats():
+    from app.core.queue import job_queue
+    return job_queue.stats()

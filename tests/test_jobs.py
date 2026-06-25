@@ -1,24 +1,8 @@
-import pytest
-from fastapi.testclient import TestClient
 from uuid import UUID
 
-from app.core.database import Base, engine
-from app.core.queue import job_queue
-from app.main import app as fastapi_app
-from app.core.database import SessionLocal
-from app.services.job_service import job_service
+from app.core import queue as queue_module
 from app.models.job import JobStatus
-
-
-@pytest.fixture
-def client():
-    import app.models  # noqa: F401 — register models; do not bind as `app` (shadows FastAPI app)
-
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    job_queue.clear()
-
-    return TestClient(fastapi_app)
+from app.services.job_service import job_service
 
 
 def test_create_job_returns_pending(client):
@@ -57,17 +41,17 @@ def test_get_job_success(client):
 
 
 def test_create_job_enqueues(client):
-    before = job_queue.size()
+    before = queue_module.job_queue.size()
     response = client.post(
         "/jobs",
         json={"job_type": "ocr", "input": {"image_url": "http://example.com/a.png"}},
     )
     assert response.status_code == 201
-    assert job_queue.size() == before + 1
+    assert queue_module.job_queue.size() == before + 1
 
 
 def test_create_job_enqueues_correct_id(client):
-    before = job_queue.size()
+    before = queue_module.job_queue.size()
 
     response = client.post(
         "/jobs",
@@ -76,8 +60,8 @@ def test_create_job_enqueues_correct_id(client):
 
     job_id = response.json()["id"]
 
-    assert job_queue.size() == before + 1
-    assert UUID(job_id) in job_queue._queue  # assumes internal list storage
+    assert queue_module.job_queue.size() == before + 1
+    assert queue_module.job_queue.peek() == UUID(job_id)
 
 
 def test_get_job_not_found(client):
@@ -118,23 +102,19 @@ def test_list_jobs(client):
     assert {job["job_type"] for job in data["jobs"]} == {"summarization", "ocr"}
 
 
-def test_update_job_status_persists(client):
+def test_update_job_status_persists(client, db_session):
     create = client.post(
         "/jobs",
         json={"job_type": "summarization", "input": {"text": "hello"}},
     )
     job_id = create.json()["id"]
 
-    db = SessionLocal()
-    try:
-        job_service.update_job_status(
-            db,
-            job_id=job_id,
-            status=JobStatus.COMPLETED,
-            result_payload={"result": "done"},
-        )
-    finally:
-        db.close()
+    job_service.update_job_status(
+        db_session,
+        job_id=job_id,
+        status=JobStatus.COMPLETED,
+        result_payload={"result": "done"},
+    )
 
     response = client.get(f"/jobs/{job_id}")
     data = response.json()
