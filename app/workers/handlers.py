@@ -7,8 +7,11 @@ JobHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def _summarize(input_payload: dict[str, Any]) -> dict[str, Any]:
-    # TODO: return fake summary
-    return {"summary": "summary generated"}
+    from app.workers.summarization_worker import summarize
+    text = input_payload.get("text", "")
+    if not text or not isinstance(text, str) or not text.strip():
+        raise ValueError("Summarization requires a non-empty 'text' field")
+    return summarize(text)
 
 
 def _ocr(input_payload: dict[str, Any]) -> dict[str, Any]:
