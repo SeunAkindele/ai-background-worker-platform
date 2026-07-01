@@ -2,7 +2,6 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.core import queue as queue_module
 from app.models.job import Job, JobStatus
 from app.schemas.job_schema import JobCreate, JobResponse, JobListResponse
 
@@ -26,11 +25,8 @@ class JobService:
         db.commit()
         db.refresh(job)
         
-        queue_module.job_queue.enqueue(
-            job.id,
-            priority=job.priority,
-            created_at=job.created_at,
-        )
+        from app.workers.celery_app import celery_app
+        celery_app.send_task("process_job", args=[str(job.id)])
     
         return JobResponse.model_validate(job)
 

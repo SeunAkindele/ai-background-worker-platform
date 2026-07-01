@@ -24,14 +24,20 @@ app.include_router(jobs_router)
 
 @app.get("/health")
 def health():
-    from app.core.queue import job_queue
+    from app.core.redis_client import redis_client
     return {
         "status": "ok",
-        "pending_jobs": job_queue.size(),
-        "processing_jobs": job_queue.processing_size(),
+        "queued_jobs": redis_client.llen("celery"),
     }
 
+    
 @app.get("/admin/queues")
 def queue_stats():
-    from app.core.queue import job_queue
-    return job_queue.stats()
+    from app.core.redis_client import redis_client
+    from app.workers.celery_app import celery_app
+    inspect = celery_app.control.inspect()
+    return {
+        "queued": redis_client.llen("celery"),
+        "active": inspect.active() or {},
+        "reserved": inspect.reserved() or {},
+    }
