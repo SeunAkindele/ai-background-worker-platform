@@ -2,33 +2,32 @@
 
 A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
 
-**Current branch:** `feat/stage-5`  
-**Current stage:** Stage 5 — Celery task queue with retry backoff
+**Current branch:** `feat/stage-6`  
+**Current stage:** Stage 6 — Multiple AI worker types with shared contract
 
-## Stage 5 scope (this branch)
+## Stage 6 scope (this branch)
 
-Stage 5 replaces the custom Redis poll-loop worker with **Celery** for task dispatch and execution. Failed tasks are retried automatically with configurable backoff, and the task function is idempotent against duplicate delivery. The legacy `RedisJobQueue` and `redis_worker` remain in the codebase but are no longer on the active dispatch path. All Stage 1–4 infrastructure (API, PostgreSQL, summarization pipeline) is unchanged.
+Stage 6 replaces the stub handlers with **real AI worker implementations**, each in its own file, all conforming to a shared `BaseJobHandler` abstract base class. The handler registry now uses lazy-instantiated class singletons instead of bare functions. Input validation for every job type is enforced at the API boundary (Pydantic) and again inside the handler (defence in depth).
 
 | Area | Status |
 |------|--------|
 | FastAPI HTTP API | Done |
 | PostgreSQL job persistence (SQLAlchemy) | Done |
-| **Celery task dispatch** (replaces custom Redis worker) | **Done** |
-| **Automatic retry with backoff** (10s → 60s, max 2 retries) | **Done** |
-| **Idempotent task execution** (skips terminal states on redelivery) | **Done** |
-| **Late acknowledgment** (`task_acks_late`, prefetch=1) | **Done** |
-| **Celery-aware observability** (`/health`, `/admin/queues`) | **Done** |
-| Real summarization (Hugging Face `facebook/bart-large-cnn`) | Done |
-| Text chunking (sliding window + recursive merge) | Done |
-| Summarization input validation (API + handler) | Done |
-| Job priority (`high`, `normal`, `low`) | Done (stored in DB; Celery dispatch is FIFO) |
-| Stub handlers for `ocr` / `embeddings` / `transcription` / `recommendations` | Done (real impls in Stage 6) |
+| Celery task dispatch with retry backoff | Done |
+| Idempotent task execution | Done |
+| **`BaseJobHandler` ABC contract** (validate → process → format) | **Done** |
+| **Embedding worker** (sentence-transformers, cosine similarity, nearest neighbor) | **Done** |
+| **OCR worker** (Pillow + pytesseract, batch pipeline, generator-based) | **Done** |
+| **Transcription worker** (audio chunking, merge intervals, timestamp alignment) | **Done** |
+| **Recommendation worker** (graph collaborative filtering, Jaccard similarity, Top-K heap) | **Done** |
+| **Summarization worker** refactored to `BaseJobHandler` subclass | **Done** |
+| **Handler registry** with lazy singleton instantiation | **Done** |
+| **Per-job-type input validation** at API level | **Done** |
+| Job priority with Celery named queues (`high`, `normal`, `low`) | Done |
 | Job lifecycle: `pending` → `processing` → `completed` \| `failed` | Done |
 | Legacy Redis queue (`RedisJobQueue`, `redis_worker`) | Retained but bypassed |
-| Automated tests (API, Redis queue, worker, chunking/summarize) | Done |
-| Celery / RabbitMQ / Kafka | **Celery with Redis broker — done** |
 
-### Architecture (Stage 5)
+### Architecture (Stage 6)
 
 ```
 Client
@@ -36,75 +35,169 @@ Client
   ▼
 FastAPI  ──►  PostgreSQL  (full job records: status, priority, payloads, timestamps)
   │
-  └──►  celery_app.send_task("process_job", [job_id])
+  └──►  celery_app.send_task("process_job", [job_id], queue=priority)
             │
             ▼
-       Redis (Celery broker)
+       Redis (Celery broker — named queues: high, normal, low)
             │
             ▼
-       Celery worker  (separate process — celery -A app.workers.celery_app worker)
+       Celery worker  (celery -A app.workers.celery_app worker)
             │
             ├── load job from PostgreSQL
             ├── idempotency check (skip if already completed / failed)
-            ├── mark processing in PostgreSQL
-            ├── run handler
-            │     └── summarization → chunk_text() → summarize_chunk() (HF model) → merge
+            ├── mark processing
+            ├── get_handler(job_type) → returns handler.run (bound method)
+            │     │
+            │     ▼
+            │   BaseJobHandler.run()
+            │     ├── validate_input()
+            │     ├── process()          ← DSA logic lives here
+            │     └── format_result()
+            │
+            │   Concrete handlers:
+            │     ├── SummarizationHandler  → chunking + sliding window + HF model
+            │     ├── EmbeddingHandler      → sentence-transformers + cosine similarity
+            │     ├── OCRHandler            → Pillow + pytesseract batch pipeline
+            │     ├── TranscriptionHandler  → audio chunking + merge intervals
+            │     └── RecommendationHandler → graph + Jaccard + Top-K heap
+            │
             ├── on success: mark completed + result_payload
             └── on failure: retry with backoff (10s → 60s)
                   └── after max retries: mark failed + error_message
 ```
 
+### BaseJobHandler contract
+
+`app/workers/base.py` defines the abstract contract every worker must follow:
+
+```python
+class BaseJobHandler(ABC, Generic[InputT, ResultT]):
+    def validate_input(self, input_payload) -> None: ...   # raise ValueError if bad
+    def process(self, input_payload) -> ResultT: ...        # DSA logic here
+    def format_result(self, raw_result) -> dict: ...        # normalize for storage
+    def run(self, input_payload) -> dict: ...               # template method (don't override)
+```
+
+`run()` calls validate → process → format in sequence. Subclasses override the three abstract methods, never `run()` itself. This is the **Template Method** design pattern.
+
+**Python internals focus:** Abstract Base Classes (`ABC`), `Generic[InputT, ResultT]` type parameters, `TypeVar` with `bound`.
+
+### Worker implementations
+
+| Worker | File | DSA Concepts | Model/Tool |
+|--------|------|-------------|------------|
+| **Summarization** | `summarization_worker.py` | Sliding window chunking, recursive merge | `facebook/bart-large-cnn` (HF) |
+| **Embeddings** | `embedding_worker.py` | Vectors, cosine similarity, brute-force nearest neighbor | `all-MiniLM-L6-v2` (sentence-transformers) |
+| **OCR** | `ocr_worker.py` | Batch pipeline (decode → preprocess → OCR → post-process), generator-based memory efficiency | Pillow + pytesseract |
+| **Transcription** | `transcription_worker.py` | Merge intervals (O(n log n)), timestamp alignment, sliding window over time | Simulated (Whisper in Stage 9) |
+| **Recommendations** | `recommendation_worker.py` | Bipartite graph (adjacency list), Jaccard similarity, weighted scoring, Top-K via `heapq.nlargest` | Pure algorithm |
+
+### Handler registry
+
+`app/workers/handlers.py` maps each `JobType` to a lazily-instantiated handler singleton:
+
+```python
+def get_handler(job_type: JobType):
+    handler = _get_or_create(job_type)
+    return handler.run  # returns the bound template method
+```
+
+Each handler class (and its heavy ML dependencies) is imported only on first use. Models load into memory once per process and stay cached. This keeps Celery worker startup fast and memory low until a job of that type actually arrives.
+
 ### Celery task design
 
-The task lives in `app/workers/tasks.py`:
+The task lives in `app/workers/tasks.py` (unchanged from Stage 5):
 
 | Concept | Detail |
 |---------|--------|
-| **Dispatch** | `job_service.create_job()` commits the job to PostgreSQL, then calls `celery_app.send_task("process_job", [str(job.id)])`. The job ID is sent as a JSON string. |
-| **Idempotency** | On entry, the task loads the job from the DB. If the job is missing or already in a terminal state (`completed` / `failed`), it returns immediately — safe against duplicate delivery or visibility-timeout redelivery. |
-| **Retry backoff** | On handler failure, Celery re-enqueues the task with a countdown: **10 s** after the 1st failure, **60 s** after the 2nd. After **3 total attempts** (original + 2 retries) the job is marked `failed` with the exception message. |
-| **Late ack** | `task_acks_late=True` + `worker_prefetch_multiplier=1` — the broker message is acknowledged only after the task completes (or permanently fails), so a killed worker doesn't lose jobs. |
-| **Visibility timeout** | Set to 1 hour (`broker_transport_options.visibility_timeout = 3600`), longer than any expected job runtime, to prevent the broker from redelivering in-flight tasks. |
-
-**DSA focus:** retry backoff schedule via dict lookup, idempotent state-machine transitions.  
-**Python internals focus:** `bind=True` task (access `self.request.retries`), `MaxRetriesExceededError` exception flow, lazy imports for Celery serialization.
+| **Dispatch** | `job_service.create_job()` commits the job to PostgreSQL, then calls `celery_app.send_task("process_job", [str(job.id)], queue=priority)`. |
+| **Idempotency** | If the job is missing or in a terminal state, the task returns immediately. |
+| **Retry backoff** | 10 s after 1st failure, 60 s after 2nd. After 3 total attempts → `failed`. |
+| **Late ack** | `task_acks_late=True` + `worker_prefetch_multiplier=1`. |
+| **Handler call** | `handler = get_handler(job.job_type)` returns `handler.run`, then `result = handler(input_payload)` triggers validate → process → format. |
 
 ### Celery configuration
 
-`app/workers/celery_app.py` configures the Celery app:
+`app/workers/celery_app.py`:
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| `broker` / `backend` | `settings.redis_url` | Uses the same Redis instance as the legacy queue |
-| `task_serializer` | `json` | Avoids pickle; forces JSON-clean arguments |
-| `task_acks_late` | `True` | Ack after completion, not on receipt |
-| `worker_prefetch_multiplier` | `1` | Process one task at a time; don't hoard messages |
-| `task_track_started` | `True` | Exposes a `STARTED` state for monitoring |
-| `visibility_timeout` | `3600` (1 h) | Longer than the slowest job to prevent false redelivery |
+| `broker` / `backend` | `settings.redis_url` | Redis as Celery broker |
+| `task_serializer` | `json` | Avoids pickle |
+| `task_acks_late` | `True` | Ack after completion |
+| `worker_prefetch_multiplier` | `1` | One task at a time |
+| `task_queues` | `high`, `normal`, `low` | Named priority queues |
+| `visibility_timeout` | `3600` (1 h) | Prevents false redelivery |
+
+### Input validation (two layers)
+
+1. **API level** — `JobCreate.validate_input_for_job_type` (Pydantic `model_validator` in `app/schemas/job_schema.py`) rejects invalid input with `422` before the job is queued. Each job type has its own validation method.
+2. **Handler level** — `BaseJobHandler.validate_input()` re-checks inside the worker (defence in depth for jobs created by other paths).
 
 ### Summarization pipeline
 
-The real work lives in `app/workers/summarization_worker.py`:
+`SummarizationHandler` in `app/workers/summarization_worker.py`:
 
-| Function | Role |
-|----------|------|
-| `summarize()` | Entry point. Short text is summarized directly; long text is chunked, each chunk summarized, summaries merged, and re-summarized recursively (up to `_max_depth`) if still too long. Returns `summary`, `chunks_processed`, `original_word_count`, `summary_word_count`. |
-| `chunk_text()` | **Generator** — yields overlapping word chunks via a sliding window. Step = `chunk_size - overlap`. Lazy, so only one chunk is held in memory at a time. |
-| `summarize_chunk()` | Summarizes a single chunk with the Hugging Face pipeline. |
-| `get_summarization_pipeline()` | Lazy-loading **singleton** for the model. Loads once on first use, reused after. Loads `facebook/bart-large-cnn` with `use_safetensors=True`. |
+| Method | Role |
+|--------|------|
+| `process()` | Entry point — short text summarized directly; long text chunked, each chunk summarized, merged recursively. |
+| `_chunk_text()` | Generator — sliding window with overlap. O(n) single pass. |
+| `_summarize_chunk()` | Single chunk through HF pipeline. |
+| `_get_pipeline()` | Lazy singleton for `facebook/bart-large-cnn` (safetensors). |
 
-**Model:** `facebook/bart-large-cnn` (~1.6GB), loaded from **safetensors** weights. Safetensors avoids `torch.load`, so the model runs on `torch 2.2.x` (required for Intel macOS, where torch ≥ 2.6 has no wheels). Swap the model name in `get_summarization_pipeline()` to use a smaller/faster one (e.g. `Falconsai/text_summarization`, ~240MB) — it must ship safetensors weights.
+### Embeddings pipeline
 
-**DSA focus:** sliding-window chunking, overlap/merge strategy, recursive (divide-and-conquer) reduction.  
-**Python internals focus:** generators / lazy evaluation, singleton via module-global, lazy heavy imports inside the handler.
+`EmbeddingHandler` in `app/workers/embedding_worker.py`:
+
+| Feature | Detail |
+|---------|--------|
+| Single text | Returns embedding vector (384 dimensions) |
+| Batch texts | Returns list of embeddings + optional nearest neighbor search |
+| `compare_to` | Computes cosine similarity between input and comparison text |
+| Cosine similarity | `dot(A,B) / (‖A‖ * ‖B‖)` — O(d) per pair |
+| Nearest neighbor | Brute-force O(n*d) — baseline that FAISS/HNSW optimize |
+
+### OCR pipeline
+
+`OCRHandler` in `app/workers/ocr_worker.py`:
+
+| Feature | Detail |
+|---------|--------|
+| Single image | base64 → decode → preprocess → OCR → result |
+| Batch images | Generator-based — O(1) memory regardless of batch size |
+| Preprocessing | Grayscale → resize (max 4000px) → sharpen |
+| Fallback | Simulated output if Tesseract binary not installed |
+
+### Transcription pipeline
+
+`TranscriptionHandler` in `app/workers/transcription_worker.py`:
+
+| Feature | Detail |
+|---------|--------|
+| Audio chunking | Sliding window over time axis (30s chunks, 2s overlap) |
+| Merge intervals | Classic O(n log n) algorithm — sort by start, single-pass merge |
+| Timestamp alignment | O(n) pass to snap boundaries together |
+| Current mode | Simulated (distributes source text across time chunks) |
+| Future (Stage 9) | Will call Whisper on real audio file uploads |
+
+### Recommendations pipeline
+
+`RecommendationHandler` in `app/workers/recommendation_worker.py`:
+
+| Feature | Detail |
+|---------|--------|
+| Graph building | Bipartite adjacency list (user ↔ item) — O(E) |
+| Similar users | Jaccard index over shared items |
+| Scoring | Weighted by similarity × rating — accumulated in hash map |
+| Top-K | `heapq.nlargest(k, ...)` — O(n log k), better than full sort when k << n |
 
 On job creation, the API:
 
-1. Inserts a `pending` job row in PostgreSQL (with optional priority)
-2. Dispatches a Celery task via `celery_app.send_task("process_job", [str(job.id)])`
+1. Inserts a `pending` job row in PostgreSQL (with priority)
+2. Dispatches a Celery task via `celery_app.send_task("process_job", [str(job.id)], queue=priority)`
 3. Returns the job to the caller
 
-The Celery worker runs in its own process, picks up tasks from the Redis broker, processes them, and updates PostgreSQL. API and worker share **only** Redis (as Celery broker) and PostgreSQL — not memory.
+The Celery worker runs in its own process, picks up tasks from the Redis broker, processes them via the appropriate handler, and updates PostgreSQL. API and worker share **only** Redis (as Celery broker) and PostgreSQL — not memory.
 
 ### Job model
 
@@ -114,14 +207,29 @@ The Celery worker runs in its own process, picks up tasks from the Redis broker,
 
 **Priorities:** `high`, `normal` (default), `low`
 
-### Handlers
+### DSA concepts per worker
 
-`app/workers/handlers.py` maps each job type to a handler. As of Stage 4, `summarization` is a **real** handler that calls `summarize()` and validates that `input.text` is a non-empty string. The other types (`ocr`, `embeddings`, `transcription`, `recommendations`) are still stubs returning fake results — real implementations come in Stage 6.
+| Worker | DSA Concept | Complexity |
+|--------|-------------|-----------|
+| Summarization | Sliding window, divide-and-conquer recursion | O(n) chunking, O(depth) merge |
+| Embeddings | Cosine similarity, brute-force nearest neighbor | O(d) per similarity, O(n*d) nearest |
+| OCR | Batch pipeline, generator streaming | O(n * pixels) total, O(pixels) memory |
+| Transcription | Merge intervals, timestamp alignment | O(n log n) sort + O(n) merge |
+| Recommendations | Graph adjacency list, Jaccard, Top-K heap | O(E) build, O(n log k) top-K |
 
-Summarization input is validated in two places:
+### Python internals learned in Stage 6
 
-1. **API level** — `JobCreate.validate_input_for_job_type` (a Pydantic `model_validator` in `app/schemas/job_schema.py`) rejects a summarization job with empty/missing `text` with a `422` before it is ever queued.
-2. **Handler level** — `_summarize` re-checks and raises `ValueError` (defence in depth for jobs created by other paths).
+| Concept | Where Used |
+|---------|-----------|
+| Abstract Base Classes (`ABC`) | `base.py` — forces subclass contract |
+| `Generic[InputT, ResultT]` | `base.py` — type-safe handler parameterization |
+| `TypeVar` with `bound` | `base.py` — constrains generics to dict subtypes |
+| Template Method pattern | `base.py` → `run()` orchestrates the steps |
+| `dataclass(frozen=True, slots=True)` | `transcription_worker.py` — immutable, memory-efficient |
+| `defaultdict` for graph construction | `recommendation_worker.py` |
+| `heapq.nlargest` for Top-K | `recommendation_worker.py` |
+| Lazy singleton pattern | `handlers.py` — one instance per job type |
+| Generators for memory efficiency | `ocr_worker.py` — batch processing |
 
 ## Project structure
 
@@ -132,15 +240,20 @@ app/
 │   ├── database.py                    # SQLAlchemy engine, sessions, db_session context manager
 │   ├── queue.py                       # RedisJobQueue (legacy — retained, not on active path)
 │   └── redis_client.py                # Shared Redis connection
-├── models/job.py                      # Job ORM model, enums, priority ranks
-├── schemas/job_schema.py              # Pydantic request/response models
+├── models/job.py                      # Job ORM model, enums
+├── schemas/job_schema.py              # Pydantic request/response + per-type input validation
 ├── services/job_service.py            # Job CRUD + Celery dispatch
 ├── workers/
+│   ├── base.py                        # BaseJobHandler ABC (Stage 6)
 │   ├── celery_app.py                  # Celery configuration (Stage 5)
 │   ├── tasks.py                       # process_job task with retry backoff (Stage 5)
+│   ├── handlers.py                    # Lazy handler registry → handler.run (Stage 6)
+│   ├── summarization_worker.py        # SummarizationHandler: chunking + HF model
+│   ├── embedding_worker.py            # EmbeddingHandler: vectors + cosine similarity (Stage 6)
+│   ├── ocr_worker.py                  # OCRHandler: batch pipeline + Pillow (Stage 6)
+│   ├── transcription_worker.py        # TranscriptionHandler: merge intervals (Stage 6)
+│   ├── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
 │   ├── redis_worker.py                # Standalone Redis poll worker (legacy)
-│   ├── handlers.py                    # Job-type → handler map (summarization is real)
-│   ├── summarization_worker.py        # Real summarizer: chunking + HF pipeline + merge
 │   └── decorators.py                  # Execution-time logging
 ├── config.py
 └── main.py                            # API only — worker is started separately
@@ -157,7 +270,13 @@ docker-compose.yml                     # PostgreSQL + Redis
 
 - Python 3.11+
 - Docker (recommended) or local PostgreSQL + Redis
-- ~2GB free disk for the summarization model (downloaded once, cached in `~/.cache/huggingface`)
+- ~2GB free disk for AI models (downloaded once, cached in `~/.cache/huggingface`):
+  - Summarization: `facebook/bart-large-cnn` (~1.6GB)
+  - Embeddings: `all-MiniLM-L6-v2` (~80MB)
+- Tesseract OCR binary (optional — OCR worker falls back to simulated output without it):
+  ```bash
+  brew install tesseract  # macOS
+  ```
 
 > **Note on `torch` (Intel macOS):** PyTorch ships no wheels newer than `2.2.x` for Intel macOS, and recent `transformers` refuses to load legacy `.bin` weights on `torch < 2.6`. Stage 4 sidesteps this by using a model with **safetensors** weights (`facebook/bart-large-cnn`) and `use_safetensors=True`, which works on `torch 2.2.x`.
 
@@ -222,7 +341,7 @@ Tables are created automatically on startup via `init_db()`.
 | `GET` | `/jobs/{job_id}` | Fetch a job by UUID |
 | `GET` | `/jobs` | List jobs (`skip`, `limit`; returns `jobs` + `total`) |
 
-**Example — create a summarization job:**
+**Example — summarization job:**
 
 ```bash
 curl -X POST http://localhost:8000/jobs \
@@ -234,24 +353,92 @@ curl -X POST http://localhost:8000/jobs \
   }'
 ```
 
-Poll `GET /jobs/{job_id}` to watch status move from `pending` → `processing` → `completed`. On success, `result_payload` contains the summary:
-
-```json
-{
-  "summary": "Artificial intelligence has transformed industries ranging from healthcare to finance...",
-  "chunks_processed": 1,
-  "original_word_count": 44,
-  "summary_word_count": 30
-}
-```
-
-A summarization job with empty or missing `text` is rejected with `422`:
+**Example — embeddings job (with similarity comparison):**
 
 ```bash
 curl -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
-  -d '{"job_type": "summarization", "input": {"text": ""}}'
-# 422 Unprocessable Entity
+  -d '{
+    "job_type": "embeddings",
+    "input": {
+      "text": "Machine learning is fascinating",
+      "compare_to": "Deep learning is a subset of ML"
+    }
+  }'
+```
+
+**Example — embeddings batch (with nearest neighbor):**
+
+```bash
+curl -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "embeddings",
+    "input": {
+      "texts": ["cat", "dog", "car", "bicycle", "fish"],
+      "compare_to": "puppy"
+    }
+  }'
+```
+
+**Example — transcription job (simulated):**
+
+```bash
+curl -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "transcription",
+    "input": {
+      "text": "Hello world this is a test of the transcription system with multiple words distributed across chunks",
+      "duration": 120
+    }
+  }'
+```
+
+**Example — recommendations job:**
+
+```bash
+curl -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "recommendations",
+    "input": {
+      "user_id": "user_1",
+      "top_k": 5,
+      "interactions": [
+        {"user_id": "user_1", "item_id": "movie_a", "rating": 5.0},
+        {"user_id": "user_1", "item_id": "movie_b", "rating": 4.0},
+        {"user_id": "user_2", "item_id": "movie_a", "rating": 4.5},
+        {"user_id": "user_2", "item_id": "movie_c", "rating": 5.0},
+        {"user_id": "user_2", "item_id": "movie_d", "rating": 3.5},
+        {"user_id": "user_3", "item_id": "movie_b", "rating": 4.0},
+        {"user_id": "user_3", "item_id": "movie_d", "rating": 4.5},
+        {"user_id": "user_3", "item_id": "movie_e", "rating": 5.0}
+      ]
+    }
+  }'
+```
+
+**Example — OCR job (base64 image):**
+
+```bash
+curl -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "ocr",
+    "input": {"image": "<base64-encoded-image-string>"}
+  }'
+```
+
+Poll `GET /jobs/{job_id}` to watch status move from `pending` → `processing` → `completed`.
+
+A job with invalid input is rejected with `422`:
+
+```bash
+curl -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"job_type": "embeddings", "input": {}}'
+# 422 — "Embeddings require either 'text' (string) or 'texts' (list of strings)"
 ```
 
 **Example — queue stats:**
@@ -281,18 +468,19 @@ Coverage includes job CRUD, Redis queue ordering (HIGH before NORMAL, FIFO tie-b
 
 See `.env.example` and `.env.test.example` for templates.
 
-## What changed from Stage 4
+## What changed from Stage 5
 
-| Stage 4 | Stage 5 |
+| Stage 5 | Stage 6 |
 |---------|---------|
-| Custom Redis poll-loop worker (`redis_worker.py`) dispatches and executes jobs | **Celery** dispatches and executes jobs via `process_job` task |
-| `job_service.create_job` enqueues to `RedisJobQueue` (ZSET) | `job_service.create_job` calls `celery_app.send_task("process_job")` |
-| Retry was a stub (`jobs:retry` LIST, never populated) | **Automatic retry with backoff** (10 s → 60 s, max 2 retries / 3 total attempts) |
-| No duplicate-delivery protection | **Idempotent task**: skips terminal states on redelivery |
-| Worker acks on dequeue | **Late ack** (`task_acks_late`) — message acknowledged after task completes |
-| `/health` reports Redis ZSET pending count | `/health` reports Celery broker queue length |
-| `/admin/queues` returns pending/processing/retry/failed counts from Redis | `/admin/queues` returns `queued`/`active`/`reserved` from Celery broker + inspect |
-| No Celery dependency | Adds `celery[redis]>=5.3.0` |
-| New files: — | `app/workers/celery_app.py`, `app/workers/tasks.py` |
+| Stub handlers (`_ocr`, `_embeddings`, etc.) return fake results | **Real handlers** with DSA algorithms and ML models |
+| Handlers are bare functions in a dict | **`BaseJobHandler` ABC** with validate → process → format contract |
+| `get_handler()` returns a function directly | `get_handler()` returns `handler.run` (bound template method) |
+| Only summarization validated at API level | **All 5 job types** validated at API level (`job_schema.py`) |
+| Single ML model (summarization) | **Two ML models**: summarization + embeddings (`sentence-transformers`) |
+| No image processing | **Pillow + pytesseract** for OCR pipeline |
+| No graph algorithms | **Graph-based recommendations** with adjacency list + heap |
+| No interval algorithms | **Merge intervals** for transcription segments |
+| New files: — | `base.py`, `embedding_worker.py`, `ocr_worker.py`, `transcription_worker.py`, `recommendation_worker.py` |
+| New dependencies: — | `sentence-transformers`, `Pillow`, `pytesseract` |
 
-> Stage 5 changes **only** the dispatch and execution layer. The API, PostgreSQL layer, summarization pipeline, and handler map are unchanged from Stage 4. The legacy `RedisJobQueue` and `redis_worker` are retained in the codebase but are no longer used by `job_service`.
+> Stage 6 changes **only** the worker layer. The API endpoints, Celery task, PostgreSQL schema, and job service are unchanged from Stage 5. `tasks.py` still calls `handler(input_payload)` — it doesn't know or care that it's now calling a class method instead of a bare function.

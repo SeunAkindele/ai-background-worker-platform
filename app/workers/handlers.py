@@ -1,47 +1,65 @@
-from typing import Any, Callable
+"""
+Handler registry — maps JobType to its BaseJobHandler instance.
+
+Python Internals Focus:
+-----------------------
+- Lazy instantiation: handlers are created once on first access
+- Dict as a registry/dispatch table: O(1) lookup
+- The _instances dict acts as a simple service locator pattern
+"""
+from typing import Any
 
 from app.models.job import JobType
+from app.workers.base import BaseJobHandler
 
-# Type alias: input dict → result dict
-JobHandler = Callable[[dict[str, Any]], dict[str, Any]]
-
-
-def _summarize(input_payload: dict[str, Any]) -> dict[str, Any]:
-    from app.workers.summarization_worker import summarize
-    text = input_payload.get("text", "")
-    if not text or not isinstance(text, str) or not text.strip():
-        raise ValueError("Summarization requires a non-empty 'text' field")
-    return summarize(text)
+_instances: dict[JobType, BaseJobHandler] = {}
 
 
-def _ocr(input_payload: dict[str, Any]) -> dict[str, Any]:
-    # TODO: return fake OCR result
-    return {"text": "ocr completed"}
+def _get_or_create(job_type: JobType) -> BaseJobHandler:
+    """
+    Lazy singleton per job type.
+
+    Why lazy?
+    - Embedding model is ~80MB — don't load until first embedding job
+    - Summarization model is ~1.6GB — don't load until first summary job
+    - Keeps startup fast, memory low until actually needed
+    """
+    if job_type not in _instances:
+        _instances[job_type] = _create_handler(job_type)
+    return _instances[job_type]
 
 
-def _embeddings(input_payload: dict[str, Any]) -> dict[str, Any]:
-    # TODO: return fake embeddings result
-    return {"embedding": [0.1, 0.2, 0.3], "dimensions": 3}
+def _create_handler(job_type: JobType) -> BaseJobHandler:
+    """Factory: create the right handler subclass for a job type."""
+    if job_type == JobType.SUMMARIZATION:
+        from app.workers.summarization_worker import SummarizationHandler
+        return SummarizationHandler()
+
+    elif job_type == JobType.EMBEDDINGS:
+        from app.workers.embedding_worker import EmbeddingHandler
+        return EmbeddingHandler()
+
+    elif job_type == JobType.OCR:
+        from app.workers.ocr_worker import OCRHandler
+        return OCRHandler()
+
+    elif job_type == JobType.TRANSCRIPTION:
+        from app.workers.transcription_worker import TranscriptionHandler
+        return TranscriptionHandler()
+
+    elif job_type == JobType.RECOMMENDATIONS:
+        from app.workers.recommendation_worker import RecommendationHandler
+        return RecommendationHandler()
+
+    raise ValueError(f"No handler registered for job type: {job_type}")
 
 
-def _transcription(input_payload: dict[str, Any]) -> dict[str, Any]:
-    # TODO: return fake transcription result
-    return {"transcript": "transcription completed"}
+def get_handler(job_type: JobType):
+    """
+    Public API: returns a callable that takes input_payload → result dict.
 
-
-def _recommendations(input_payload: dict[str, Any]) -> dict[str, Any]:
-    # TODO: return fake recommendations result
-    return {"recommendations": ["item-a", "item-b"]}
-
-
-HANDLERS: dict[JobType, JobHandler] = {
-    JobType.SUMMARIZATION: _summarize,
-    JobType.OCR: _ocr,
-    JobType.EMBEDDINGS: _embeddings,
-    JobType.TRANSCRIPTION: _transcription,
-    JobType.RECOMMENDATIONS: _recommendations,
-}
-
-
-def get_handler(job_type: JobType) -> JobHandler:
-    return HANDLERS[job_type]
+    This is what tasks.py calls. It returns handler.run (the template method),
+    keeping backward compatibility with the existing Celery task.
+    """
+    handler = _get_or_create(job_type)
+    return handler.run

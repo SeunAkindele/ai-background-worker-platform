@@ -26,7 +26,9 @@ class JobService:
         db.refresh(job)
         
         from app.workers.celery_app import celery_app
-        celery_app.send_task("process_job", args=[str(job.id)])
+
+        queue_name = job.priority.value
+        celery_app.send_task("process_job", args=[str(job.id)], queue=queue_name)
     
         return JobResponse.model_validate(job)
 

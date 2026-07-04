@@ -1,158 +1,115 @@
 """
-Real summarization worker — Stage 4.
+Summarization Worker — Stage 4 logic, now conforming to Stage 6 BaseJobHandler.
 
-Implements text chunking with sliding window overlap
-and Hugging Face pipeline-based summarization.
+DSA Focus: Chunking with sliding window, recursive merge.
 """
 from typing import Any, Generator
+
+from app.workers.base import BaseJobHandler
 
 _pipeline = None
 
 
-def summarize(
-    text: str,
-    chunk_size: int = 500,
-    overlap: int = 50,
-    max_length: int = 150,
-    min_length: int = 40,
-    _depth: int = 0,
-    _max_depth: int = 3,
-) -> dict[str, Any]:
-    """
-    Summarize text of any length using chunking + recursive merge.
+class SummarizationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
-    1. If text is short enough, summarize directly.
-    2. Otherwise, chunk it, summarize each chunk, merge the summaries.
-    3. If merged summary is still too long, recurse (up to _max_depth).
+    def __init__(
+        self,
+        chunk_size: int = 500,
+        overlap: int = 50,
+        max_length: int = 150,
+        min_length: int = 40,
+        max_depth: int = 3,
+    ):
+        self._chunk_size = chunk_size
+        self._overlap = overlap
+        self._max_length = max_length
+        self._min_length = min_length
+        self._max_depth = max_depth
 
-    Args:
-        text: The input text to summarize.
-        chunk_size: Max words per chunk for the sliding window.
-        overlap: Overlapping words between chunks.
-        max_length: Max tokens in each chunk's summary output.
-        min_length: Min tokens in each chunk's summary output.
-        _depth: Current recursion depth (internal use).
-        _max_depth: Maximum recursion depth to prevent infinite loops.
+    def validate_input(self, input_payload: dict[str, Any]) -> None:
+        text = input_payload.get("text", "")
+        if not text or not isinstance(text, str) or not text.strip():
+            raise ValueError("Summarization requires a non-empty 'text' field")
 
-    Returns:
-        Dict with summary, chunks_processed, original_word_count, summary_word_count.
-    """
-    original_word_count = len(text.split())
-    chunks_processed = 0
+    def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+        text = input_payload["text"]
+        return self._summarize(text, depth=0)
 
-    words = text.split()
+    def format_result(self, raw_result: dict[str, Any]) -> dict[str, Any]:
+        return raw_result
 
-    if len(words) <= chunk_size:
-        summary_text = summarize_chunk(text, max_length=max_length, min_length=min_length)
+    def _summarize(self, text: str, depth: int) -> dict[str, Any]:
+        original_word_count = len(text.split())
+        words = text.split()
+
+        if len(words) <= self._chunk_size:
+            summary_text = self._summarize_chunk(text)
+            return {
+                "summary": summary_text,
+                "chunks_processed": 1,
+                "original_word_count": original_word_count,
+                "summary_word_count": len(summary_text.split()),
+            }
+
+        chunk_summaries = []
+        chunks_processed = 0
+        for chunk in self._chunk_text(text):
+            chunk_summaries.append(self._summarize_chunk(chunk))
+            chunks_processed += 1
+
+        merged = " ".join(chunk_summaries)
+
+        # _summarize recursively calls itself if condition is met (word count is greater than chunk size and depth is less than max depth)
+        if len(merged.split()) > self._chunk_size and depth < self._max_depth:
+            recursive_result = self._summarize(merged, depth + 1)
+            return {
+                "summary": recursive_result["summary"],
+                "chunks_processed": chunks_processed + recursive_result["chunks_processed"],
+                "original_word_count": original_word_count,
+                "summary_word_count": recursive_result["summary_word_count"],
+            }
+
         return {
-            "summary": summary_text,
-            "chunks_processed": 1,
+            "summary": merged,
+            "chunks_processed": chunks_processed,
             "original_word_count": original_word_count,
-            "summary_word_count": len(summary_text.split()),
+            "summary_word_count": len(merged.split()),
         }
 
-    chunk_summaries = []
-    for chunk in chunk_text(text, chunk_size=chunk_size, overlap=overlap):
-        chunk_summary = summarize_chunk(chunk, max_length=max_length, min_length=min_length)
-        chunk_summaries.append(chunk_summary)
-        chunks_processed += 1
+    def _chunk_text(self, text: str) -> Generator[str, None, None]:
+        """Sliding window chunking — DSA: O(n) single pass over words."""
+        words = text.split()
+        if not words:
+            return
+        if len(words) <= self._chunk_size:
+            yield text
+            return
 
-    merged = " ".join(chunk_summaries)
+        step = self._chunk_size - self._overlap
+        start = 0
+        while start < len(words):
+            end = start + self._chunk_size
+            yield " ".join(words[start:end])
+            if end >= len(words):
+                break
+            start += step
 
-    if len(merged.split()) > chunk_size and _depth < _max_depth:
-        recursive_result = summarize(
-            merged,
-            chunk_size=chunk_size,
-            overlap=overlap,
-            max_length=max_length,
-            min_length=min_length,
-            _depth=_depth + 1,
-            _max_depth=_max_depth,
+    def _summarize_chunk(self, text: str) -> str:
+        pipe = _get_pipeline()
+        result = pipe(
+            text,
+            max_length=self._max_length,
+            min_length=self._min_length,
+            do_sample=False,
         )
-        return {
-            "summary": recursive_result["summary"],
-            "chunks_processed": chunks_processed + recursive_result["chunks_processed"],
-            "original_word_count": original_word_count,
-            "summary_word_count": recursive_result["summary_word_count"],
-        }
-
-    return {
-        "summary": merged,
-        "chunks_processed": chunks_processed,
-        "original_word_count": original_word_count,
-        "summary_word_count": len(merged.split()),
-    }
+        return result[0]["summary_text"]
 
 
-def chunk_text(
-    text: str,
-    chunk_size: int = 500,
-    overlap: int = 50,
-) -> Generator[str, None, None]:
-    """
-    Split text into overlapping word-based chunks using a sliding window.
-
-    Yields one chunk at a time (generator — lazy evaluation, memory-efficient).
-
-    Args:
-        text: The input text to chunk.
-        chunk_size: Maximum number of words per chunk.
-        overlap: Number of overlapping words between consecutive chunks.
-
-    Yields:
-        A string chunk of at most chunk_size words.
-
-    Raises:
-        ValueError: If overlap >= chunk_size (step would be zero or negative).
-    """
-    if overlap >= chunk_size:
-        raise ValueError(
-            f"overlap ({overlap}) must be less than chunk_size ({chunk_size})"
-        )
-
-    words = text.split()
-    total_words = len(words)
-
-    if total_words == 0:
-        return
-
-    if total_words <= chunk_size:
-        yield text
-        return
-
-    step = chunk_size - overlap
-    start = 0
-
-    while start < total_words:
-        end = start + chunk_size
-        chunk_words = words[start:end]
-        yield " ".join(chunk_words)
-
-        if end >= total_words:
-            break
-
-        start += step
-
-
-def summarize_chunk(text: str, max_length: int = 150, min_length: int = 40) -> str:
-    """Summarize a single chunk of text using the Hugging Face pipeline."""
-    pipe = get_summarization_pipeline()
-    result = pipe(text, max_length=max_length, min_length=min_length, do_sample=False)
-    return result[0]["summary_text"]
-
-
-def get_summarization_pipeline():
-    """
-    Lazy-loading singleton for the summarization model.
-
-    First call downloads/loads the model (~1.6GB, takes a while).
-    Subsequent calls return the cached pipeline instantly.
-    Uses safetensors weights (no torch.load — works on torch < 2.6).
-    """
+def _get_pipeline():
+    """Lazy singleton — model loads once per process, stays in memory."""
     global _pipeline
     if _pipeline is None:
         from transformers import pipeline
-
         _pipeline = pipeline(
             "summarization",
             model="facebook/bart-large-cnn",

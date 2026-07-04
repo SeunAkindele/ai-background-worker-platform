@@ -30,14 +30,6 @@ class JobPriority(str, enum.Enum):
     LOW = "low"
 
 
-# Lower number = higher priority (used by heapq min-heap)
-PRIORITY_RANK: dict[JobPriority, int] = {
-    JobPriority.HIGH: 0,
-    JobPriority.NORMAL: 1,
-    JobPriority.LOW: 2,
-}
-
-
 class Job(Base):
     __tablename__ = "jobs"
 

@@ -1,4 +1,5 @@
 from celery import Celery
+from kombu import Queue
 
 from app.config import settings
 
@@ -26,4 +27,15 @@ celery_app.conf.update(
 
     # --- visibility timeout (DSA focus) ---
     broker_transport_options={"visibility_timeout": 3600},  # 1h; > your slowest job
+
+    # Priority queues — workers drain "high" before "normal" before "low"
+    task_queues=(
+        Queue("high", routing_key="high"),
+        Queue("normal", routing_key="normal"),
+        Queue("low", routing_key="low"),
+    ),
+    task_default_queue="normal",
+    task_default_routing_key="normal",
+    # Workers consume in this order (leftmost first when messages are available)
+    worker_consumer_prefetch=True,
 )
