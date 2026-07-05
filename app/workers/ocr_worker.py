@@ -72,9 +72,7 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             page_result = self._process_single_image(image)
             return {"pages": [page_result], "total_pages": 1}
 
-        pages = []
-        for __, page_result in enumerate(self._process_batch(images)):
-            pages.append(page_result)
+        pages = list(self._process_batch(images))
 
         return {"pages": pages, "total_pages": len(pages)}
 
@@ -191,17 +189,19 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                     try:
                         import pytesseract
                         text = pytesseract.image_to_string(frame)
+                        confidence = self._estimate_confidence(frame, text)
                     except (ImportError, OSError):
                         text = f"[simulated OCR for page {page_num + 1}]"
+                        confidence = 0.0
 
                     pages.append({
                         "page": page_num + 1,
                         "text": text.strip(),
-                        "confidence": 0.85,
+                        "confidence": confidence,
                     })
                     page_num += 1
             except EOFError:
-                pass
+                ...
 
             if not pages:
                 pages = [{"page": 1, "text": "[no content extracted]", "confidence": 0.0}]
