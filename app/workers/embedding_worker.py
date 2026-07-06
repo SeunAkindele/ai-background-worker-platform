@@ -33,7 +33,7 @@ class EmbeddingHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         """Lazy-load the sentence-transformer model (one per process)."""
         if self._model is None:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self._model_name)
+            self._model = SentenceTransformer(self._model_name, device="cpu")
         return self._model
 
     def validate_input(self, input_payload: dict[str, Any]) -> None:
