@@ -341,112 +341,21 @@ Tables are created automatically on startup via `init_db()`.
 | `GET` | `/jobs/{job_id}` | Fetch a job by UUID |
 | `GET` | `/jobs` | List jobs (`skip`, `limit`; returns `jobs` + `total`) |
 
-**Example — summarization job:**
+**Quick example:**
 
 ```bash
 curl -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
   -d '{
     "job_type": "summarization",
-    "input": {"text": "Artificial intelligence has transformed industries ranging from healthcare to finance. In healthcare, AI systems can now detect diseases from medical images with accuracy rivaling human doctors. In finance, AI powers fraud detection systems that monitor millions of transactions in real time."},
+    "input": {"text": "Artificial intelligence has transformed industries..."},
     "priority": "high"
-  }'
-```
-
-**Example — embeddings job (with similarity comparison):**
-
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_type": "embeddings",
-    "input": {
-      "text": "Machine learning is fascinating",
-      "compare_to": "Deep learning is a subset of ML"
-    }
-  }'
-```
-
-**Example — embeddings batch (with nearest neighbor):**
-
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_type": "embeddings",
-    "input": {
-      "texts": ["cat", "dog", "car", "bicycle", "fish"],
-      "compare_to": "puppy"
-    }
-  }'
-```
-
-**Example — transcription job (simulated):**
-
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_type": "transcription",
-    "input": {
-      "text": "Hello world this is a test of the transcription system with multiple words distributed across chunks",
-      "duration": 120
-    }
-  }'
-```
-
-**Example — recommendations job:**
-
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_type": "recommendations",
-    "input": {
-      "user_id": "user_1",
-      "top_k": 5,
-      "interactions": [
-        {"user_id": "user_1", "item_id": "movie_a", "rating": 5.0},
-        {"user_id": "user_1", "item_id": "movie_b", "rating": 4.0},
-        {"user_id": "user_2", "item_id": "movie_a", "rating": 4.5},
-        {"user_id": "user_2", "item_id": "movie_c", "rating": 5.0},
-        {"user_id": "user_2", "item_id": "movie_d", "rating": 3.5},
-        {"user_id": "user_3", "item_id": "movie_b", "rating": 4.0},
-        {"user_id": "user_3", "item_id": "movie_d", "rating": 4.5},
-        {"user_id": "user_3", "item_id": "movie_e", "rating": 5.0}
-      ]
-    }
-  }'
-```
-
-**Example — OCR job (base64 image):**
-
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_type": "ocr",
-    "input": {"image": "<base64-encoded-image-string>"}
   }'
 ```
 
 Poll `GET /jobs/{job_id}` to watch status move from `pending` → `processing` → `completed`.
 
-A job with invalid input is rejected with `422`:
-
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"job_type": "embeddings", "input": {}}'
-# 422 — "Embeddings require either 'text' (string) or 'texts' (list of strings)"
-```
-
-**Example — queue stats:**
-
-```bash
-curl http://localhost:8000/admin/queues
-# {"queued": 0, "active": {}, "reserved": {}}
-```
+> For full request examples for all 5 worker types (including batch, edge cases, and validation errors), see [`API_COLLECTION.md`](API_COLLECTION.md).
 
 ## Tests
 
