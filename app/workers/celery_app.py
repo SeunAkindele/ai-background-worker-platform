@@ -39,3 +39,6 @@ celery_app.conf.update(
     # Workers consume in this order (leftmost first when messages are available)
     worker_consumer_prefetch=True,
 )
+
+# Register worker lifecycle hooks (periodic heartbeat thread).
+import app.workers.worker_signals  # noqa: E402, F401

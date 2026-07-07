@@ -2,12 +2,12 @@
 
 A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
 
-**Current branch:** `feat/stage-6`  
-**Current stage:** Stage 6 — Multiple AI worker types with shared contract
+**Current branch:** `feat/stage-7`  
+**Current stage:** Stage 7 — Observability and Admin Controls
 
-## Stage 6 scope (this branch)
+## Stage 7 scope (this branch)
 
-Stage 6 replaces the stub handlers with **real AI worker implementations**, each in its own file, all conforming to a shared `BaseJobHandler` abstract base class. The handler registry now uses lazy-instantiated class singletons instead of bare functions. Input validation for every job type is enforced at the API boundary (Pydantic) and again inside the handler (defence in depth).
+Stage 7 makes the platform **debuggable and observable**. Every job now has a structured audit trail (`job_logs`), every worker process sends periodic heartbeats (`worker_heartbeats`), and a new admin API exposes dashboards, error logs, slowest-job rankings, and worker health.
 
 | Area | Status |
 |------|--------|
@@ -15,25 +15,42 @@ Stage 6 replaces the stub handlers with **real AI worker implementations**, each
 | PostgreSQL job persistence (SQLAlchemy) | Done |
 | Celery task dispatch with retry backoff | Done |
 | Idempotent task execution | Done |
-| **`BaseJobHandler` ABC contract** (validate → process → format) | **Done** |
-| **Embedding worker** (sentence-transformers, cosine similarity, nearest neighbor) | **Done** |
-| **OCR worker** (Pillow + pytesseract, batch pipeline, generator-based) | **Done** |
-| **Transcription worker** (audio chunking, merge intervals, timestamp alignment) | **Done** |
-| **Recommendation worker** (graph collaborative filtering, Jaccard similarity, Top-K heap) | **Done** |
-| **Summarization worker** refactored to `BaseJobHandler` subclass | **Done** |
-| **Handler registry** with lazy singleton instantiation | **Done** |
-| **Per-job-type input validation** at API level | **Done** |
+| `BaseJobHandler` ABC contract (validate → process → format) | Done |
+| All 5 AI workers (summarization, embeddings, OCR, transcription, recommendations) | Done |
+| Handler registry with lazy singleton instantiation | Done |
+| Per-job-type input validation at API level | Done |
 | Job priority with Celery named queues (`high`, `normal`, `low`) | Done |
 | Job lifecycle: `pending` → `processing` → `completed` \| `failed` | Done |
+| **`job_logs` table — structured per-job audit trail** | **Done** |
+| **`worker_heartbeats` table — worker liveness tracking** | **Done** |
+| **Periodic heartbeat thread — idle workers stay ONLINE** | **Done** |
+| **Graceful shutdown — workers marked OFFLINE immediately on exit** | **Done** |
+| **Exponential backoff on heartbeat DB failures** | **Done** |
+| **Admin dashboard endpoint — job counts, queue size, worker health** | **Done** |
+| **Job logs endpoint — audit trail per job** | **Done** |
+| **Recent errors endpoint — latest failures across all jobs** | **Done** |
+| **Slowest jobs endpoint — Top-K via heap** | **Done** |
+| **Worker health endpoint — live status of all workers** | **Done** |
+| **Timing context manager (`timed_block`)** | **Done** |
+| **Monitoring decorator (`monitor_task`)** | **Done** |
 | Legacy Redis queue (`RedisJobQueue`, `redis_worker`) | Retained but bypassed |
 
-### Architecture (Stage 6)
+### Architecture (Stage 7)
 
 ```
 Client
   │
   ▼
-FastAPI  ──►  PostgreSQL  (full job records: status, priority, payloads, timestamps)
+FastAPI  ──►  PostgreSQL
+  │             ├── jobs           (status, priority, payloads, timestamps)
+  │             ├── job_logs       (per-job audit trail: message, level, timestamp)
+  │             └── worker_heartbeats (worker liveness: status, current_job, counters)
+  │
+  ├──►  /admin/dashboard        → aggregated metrics (job counts, queue size, workers)
+  ├──►  /admin/jobs/{id}/logs   → audit trail for one job
+  ├──►  /admin/errors           → recent failures across all jobs
+  ├──►  /admin/slowest-jobs     → Top-K slowest jobs (heapq)
+  ├──►  /admin/workers          → worker health (online/busy/offline)
   │
   └──►  celery_app.send_task("process_job", [job_id], queue=priority)
             │
@@ -43,13 +60,18 @@ FastAPI  ──►  PostgreSQL  (full job records: status, priority, payloads, t
             ▼
        Celery worker  (celery -A app.workers.celery_app worker)
             │
+            ├── heartbeat thread (pulse every 60s — keeps idle workers ONLINE)
+            ├── on startup: start heartbeat thread
+            ├── on shutdown: mark OFFLINE immediately
+            │
             ├── load job from PostgreSQL
             ├── idempotency check (skip if already completed / failed)
-            ├── mark processing
+            ├── mark processing + log "picked up by worker X"
+            ├── beat(status=BUSY, current_job_id=...)
             ├── get_handler(job_type) → returns handler.run (bound method)
             │     │
             │     ▼
-            │   BaseJobHandler.run()
+            │   BaseJobHandler.run()  ← wrapped in timed_block()
             │     ├── validate_input()
             │     ├── process()          ← DSA logic lives here
             │     └── format_result()
@@ -61,9 +83,9 @@ FastAPI  ──►  PostgreSQL  (full job records: status, priority, payloads, t
             │     ├── TranscriptionHandler  → audio chunking + merge intervals
             │     └── RecommendationHandler → graph + Jaccard + Top-K heap
             │
-            ├── on success: mark completed + result_payload
-            └── on failure: retry with backoff (10s → 60s)
-                  └── after max retries: mark failed + error_message
+            ├── on success: mark completed + log duration + record_completion
+            └── on failure: log error + retry with backoff (10s → 60s)
+                  └── after max retries: mark failed + log + record_completion
 ```
 
 ### BaseJobHandler contract
@@ -106,7 +128,7 @@ Each handler class (and its heavy ML dependencies) is imported only on first use
 
 ### Celery task design
 
-The task lives in `app/workers/tasks.py` (unchanged from Stage 5):
+The task lives in `app/workers/tasks.py` (updated in Stage 7 to emit logs and heartbeats):
 
 | Concept | Detail |
 |---------|--------|
@@ -115,6 +137,10 @@ The task lives in `app/workers/tasks.py` (unchanged from Stage 5):
 | **Retry backoff** | 10 s after 1st failure, 60 s after 2nd. After 3 total attempts → `failed`. |
 | **Late ack** | `task_acks_late=True` + `worker_prefetch_multiplier=1`. |
 | **Handler call** | `handler = get_handler(job.job_type)` returns `handler.run`, then `result = handler(input_payload)` triggers validate → process → format. |
+| **Job logs** | Every lifecycle transition (picked up, failed attempt, permanently failed, completed) writes a `job_logs` row. |
+| **Heartbeat** | On pickup: `beat(status=BUSY, current_job_id=...)`. On completion/failure: `record_completion()`. |
+| **Timing** | Processing wrapped in `timed_block()` — exact duration logged on success. |
+| **Worker identity** | `get_process_worker_name()` returns `celery@{hostname}.{pid}` — stable per process, matches the heartbeat thread. |
 
 ### Celery configuration
 
@@ -128,6 +154,59 @@ The task lives in `app/workers/tasks.py` (unchanged from Stage 5):
 | `worker_prefetch_multiplier` | `1` | One task at a time |
 | `task_queues` | `high`, `normal`, `low` | Named priority queues |
 | `visibility_timeout` | `3600` (1 h) | Prevents false redelivery |
+
+### Observability (Stage 7)
+
+#### Job logs
+
+Every job gets a structured audit trail in the `job_logs` table. Each row has `job_id`, `message`, `level` (info/warning/error/debug), and `created_at`. Logs are written during task execution — not via Python's `logging` module — so they survive in PostgreSQL and are queryable per job via `GET /admin/jobs/{job_id}/logs`.
+
+#### Worker heartbeats
+
+Workers maintain liveness via two mechanisms:
+
+| Mechanism | When | What it does |
+|-----------|------|-------------|
+| `beat()` | Job pickup | Sets `status=BUSY`, `current_job_id`, `worker_type` |
+| `pulse()` | Every 60s (background thread) | Refreshes `last_seen_at` only — preserves BUSY state mid-job |
+| `record_completion()` | Job success/failure | Increments counters, clears `current_job_id`, sets `status=ONLINE` |
+| `mark_offline()` | Graceful shutdown | Immediately marks worker OFFLINE |
+
+Both `beat()` and `pulse()` share a private `_upsert()` method — no duplicated logic.
+
+The heartbeat thread uses `threading.Event` for clean shutdown and exponential backoff (capped at 5 minutes) when the database is unreachable.
+
+**Staleness detection:** `mark_stale_workers_offline()` marks any worker whose `last_seen_at` is older than 2 minutes as OFFLINE. With the periodic pulse, only truly dead workers (crashed processes) hit this — idle workers stay ONLINE.
+
+#### Worker lifecycle signals
+
+| Signal | Pool | Action |
+|--------|------|--------|
+| `worker_process_init` | Prefork | Start heartbeat thread in each child |
+| `worker_process_shutdown` | Prefork | Stop thread, mark OFFLINE |
+| `worker_ready` | Solo | Start heartbeat thread in main process |
+| `worker_shutdown` | Solo | Stop thread, mark OFFLINE |
+
+#### Admin dashboard
+
+`GET /admin/dashboard` aggregates across all tables:
+
+| Metric | How it's computed |
+|--------|------------------|
+| Job counts by status | `GROUP BY status` — hash map aggregation, O(n) |
+| Average processing time | `AVG(updated_at - created_at)` for completed jobs |
+| Slowest job types | `GROUP BY job_type` + `heapq.nlargest(k)` — O(n log k) |
+| Queue size | Sum of `LLEN` across Redis priority queues |
+| Worker health | From `worker_heartbeats` table after marking stale workers |
+
+#### Decorators and context managers
+
+| Tool | File | Purpose |
+|------|------|---------|
+| `timed_block(label)` | `decorators.py` | Context manager — times a code block, exposes `timer.elapsed` after `with` block |
+| `log_execution_time` | `decorators.py` | Decorator — logs function duration |
+| `monitor_task` | `decorators.py` | Decorator — logs start/success/failure with timing |
+| `TimerResult` | `decorators.py` | Mutable container with `__slots__` — holds elapsed time |
 
 ### Input validation (two layers)
 
@@ -217,6 +296,16 @@ The Celery worker runs in its own process, picks up tasks from the Redis broker,
 | Transcription | Merge intervals, timestamp alignment | O(n log n) sort + O(n) merge |
 | Recommendations | Graph adjacency list, Jaccard, Top-K heap | O(E) build, O(n log k) top-K |
 
+### DSA concepts in Stage 7
+
+| Concept | Where Used | Complexity |
+|---------|-----------|-----------|
+| Hash map aggregation | `admin_service.get_dashboard()` — GROUP BY status | O(n) scan, O(1) lookup |
+| Top-K via heap | `admin_service.get_top_k_slowest_jobs()` — `heapq.nlargest` | O(n log k) |
+| Sliding window (time) | `heartbeat_service.mark_stale_workers_offline()` — time-based cutoff | O(n) scan |
+| B-tree index lookup | `job_logs.job_id` index, `worker_heartbeats.worker_name` index | O(log n) |
+| Append-only log | `job_logs` table — write once, read many, ordered by time | O(1) write |
+
 ### Python internals learned in Stage 6
 
 | Concept | Where Used |
@@ -231,30 +320,57 @@ The Celery worker runs in its own process, picks up tasks from the Redis broker,
 | Lazy singleton pattern | `handlers.py` — one instance per job type |
 | Generators for memory efficiency | `ocr_worker.py` — batch processing |
 
+### Python internals learned in Stage 7
+
+| Concept | Where Used |
+|---------|-----------|
+| Context manager (`@contextmanager`) | `decorators.py` — `timed_block` with mutable result via yield |
+| `__slots__` | `decorators.py` — `TimerResult` uses fixed-layout struct, no `__dict__` |
+| Mutable reference via yield | `TimerResult` is mutated after yield, caller sees updated `elapsed` |
+| Decorator stacking | `monitor_task` designed to layer on top of `@celery_app.task` |
+| `threading.Event` | `worker_signals.py` — clean shutdown of heartbeat loop |
+| Exponential backoff | `worker_signals.py` — `interval * 2^failures`, capped at 5 min |
+| Celery signals | `worker_signals.py` — `worker_process_init`, `worker_ready`, `worker_shutdown` |
+| Upsert pattern | `heartbeat_service._upsert()` — SELECT then UPDATE or INSERT |
+
 ## Project structure
 
 ```
 app/
-├── api/jobs.py                        # REST endpoints
+├── api/
+│   ├── jobs.py                        # Job CRUD endpoints
+│   └── admin.py                       # Admin dashboard, logs, errors, workers (Stage 7)
 ├── core/
 │   ├── database.py                    # SQLAlchemy engine, sessions, db_session context manager
 │   ├── queue.py                       # RedisJobQueue (legacy — retained, not on active path)
 │   └── redis_client.py                # Shared Redis connection
-├── models/job.py                      # Job ORM model, enums
-├── schemas/job_schema.py              # Pydantic request/response + per-type input validation
-├── services/job_service.py            # Job CRUD + Celery dispatch
+├── models/
+│   ├── __init__.py                    # Imports all models for create_all
+│   ├── job.py                         # Job ORM model, enums
+│   ├── job_log.py                     # JobLog ORM model (Stage 7)
+│   └── worker_heartbeat.py            # WorkerHeartbeat ORM model (Stage 7)
+├── schemas/
+│   ├── job_schema.py                  # Pydantic request/response + per-type input validation
+│   └── admin_schema.py                # Admin response schemas (Stage 7)
+├── services/
+│   ├── job_service.py                 # Job CRUD + Celery dispatch
+│   ├── log_service.py                 # Job log CRUD (Stage 7)
+│   ├── heartbeat_service.py           # Worker heartbeat upsert, pulse, staleness (Stage 7)
+│   └── admin_service.py               # Dashboard aggregation, Top-K (Stage 7)
 ├── workers/
 │   ├── base.py                        # BaseJobHandler ABC (Stage 6)
-│   ├── celery_app.py                  # Celery configuration (Stage 5)
-│   ├── tasks.py                       # process_job task with retry backoff (Stage 5)
+│   ├── celery_app.py                  # Celery configuration + signal registration (Stage 5/7)
+│   ├── tasks.py                       # process_job task with logging + heartbeats (Stage 5/7)
 │   ├── handlers.py                    # Lazy handler registry → handler.run (Stage 6)
+│   ├── worker_identity.py             # Stable per-process worker name (Stage 7)
+│   ├── worker_signals.py              # Celery signals: heartbeat thread + shutdown (Stage 7)
+│   ├── decorators.py                  # timed_block, log_execution_time, monitor_task (Stage 7)
 │   ├── summarization_worker.py        # SummarizationHandler: chunking + HF model
 │   ├── embedding_worker.py            # EmbeddingHandler: vectors + cosine similarity (Stage 6)
 │   ├── ocr_worker.py                  # OCRHandler: batch pipeline + Pillow (Stage 6)
 │   ├── transcription_worker.py        # TranscriptionHandler: merge intervals (Stage 6)
 │   ├── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
-│   ├── redis_worker.py                # Standalone Redis poll worker (legacy)
-│   └── decorators.py                  # Execution-time logging
+│   └── redis_worker.py                # Standalone Redis poll worker (legacy)
 ├── config.py
 └── main.py                            # API only — worker is started separately
 tests/
@@ -324,7 +440,7 @@ celery -A app.workers.celery_app worker --loglevel=info
 ```
 
 - Health: `GET http://localhost:8000/health`
-- Queue stats: `GET http://localhost:8000/admin/queues`
+- Dashboard: `GET http://localhost:8000/admin/dashboard`
 - Interactive docs: `http://localhost:8000/docs`
 
 Tables are created automatically on startup via `init_db()`.
@@ -336,10 +452,14 @@ Tables are created automatically on startup via `init_db()`.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Liveness + number of queued Celery tasks |
-| `GET` | `/admin/queues` | Celery queue stats (`queued`, `active`, `reserved`) |
 | `POST` | `/jobs` | Create a job (`job_type`, `input`, optional `priority`) |
 | `GET` | `/jobs/{job_id}` | Fetch a job by UUID |
 | `GET` | `/jobs` | List jobs (`skip`, `limit`; returns `jobs` + `total`) |
+| `GET` | `/admin/dashboard` | Full system overview (job counts, queue size, workers) |
+| `GET` | `/admin/jobs/{job_id}/logs` | Audit trail for a specific job (`limit`) |
+| `GET` | `/admin/errors` | Recent error logs across all jobs (`limit`) |
+| `GET` | `/admin/slowest-jobs` | Top-K slowest completed jobs (`k`) |
+| `GET` | `/admin/workers` | Worker health and status |
 
 **Quick example:**
 
@@ -377,19 +497,21 @@ Coverage includes job CRUD, Redis queue ordering (HIGH before NORMAL, FIFO tie-b
 
 See `.env.example` and `.env.test.example` for templates.
 
-## What changed from Stage 5
+## What changed from Stage 6
 
-| Stage 5 | Stage 6 |
+| Stage 6 | Stage 7 |
 |---------|---------|
-| Stub handlers (`_ocr`, `_embeddings`, etc.) return fake results | **Real handlers** with DSA algorithms and ML models |
-| Handlers are bare functions in a dict | **`BaseJobHandler` ABC** with validate → process → format contract |
-| `get_handler()` returns a function directly | `get_handler()` returns `handler.run` (bound template method) |
-| Only summarization validated at API level | **All 5 job types** validated at API level (`job_schema.py`) |
-| Single ML model (summarization) | **Two ML models**: summarization + embeddings (`sentence-transformers`) |
-| No image processing | **Pillow + pytesseract** for OCR pipeline |
-| No graph algorithms | **Graph-based recommendations** with adjacency list + heap |
-| No interval algorithms | **Merge intervals** for transcription segments |
-| New files: — | `base.py`, `embedding_worker.py`, `ocr_worker.py`, `transcription_worker.py`, `recommendation_worker.py` |
-| New dependencies: — | `sentence-transformers`, `Pillow`, `pytesseract` |
+| No job audit trail | **`job_logs` table** — structured per-job logs with level and timestamp |
+| No worker health tracking | **`worker_heartbeats` table** — liveness, status, counters, current job |
+| Workers invisible to the API | **5 admin endpoints** — dashboard, logs, errors, slowest jobs, workers |
+| No timing instrumentation | **`timed_block` context manager** — exact processing duration per job |
+| `tasks.py` only updates job status | `tasks.py` now also writes logs, sends heartbeats, records timing |
+| Single `log_execution_time` decorator | Added **`monitor_task`** decorator and **`TimerResult`** with `__slots__` |
+| No worker identity system | **`worker_identity.py`** — stable `celery@host.pid` name per process |
+| No lifecycle signals | **`worker_signals.py`** — heartbeat thread, graceful shutdown, backoff |
+| No admin router | **`admin.py`** router with dashboard, logs, errors, slowest-jobs, workers |
+| `main.py` had inline `/admin/queues` | Replaced by proper admin router |
+| New files: — | `job_log.py`, `worker_heartbeat.py`, `admin_schema.py`, `log_service.py`, `heartbeat_service.py`, `admin_service.py`, `admin.py`, `worker_identity.py`, `worker_signals.py` |
+| New tables: — | `job_logs`, `worker_heartbeats` |
 
-> Stage 6 changes **only** the worker layer. The API endpoints, Celery task, PostgreSQL schema, and job service are unchanged from Stage 5. `tasks.py` still calls `handler(input_payload)` — it doesn't know or care that it's now calling a class method instead of a bare function.
+> Stage 7 adds the **observability layer** on top of the existing worker and API layers. The worker handlers (`base.py`, all 5 `*_worker.py` files) are completely unchanged. The job model and schema are unchanged. `tasks.py` gained logging/heartbeat calls but the core flow (pick up → process → succeed/fail) is the same.

@@ -12,7 +12,11 @@ Base URL: `http://localhost:8000`
 | `GET` | `/jobs/{job_id}` | Get job by ID (check status/result) |
 | `GET` | `/jobs` | List all jobs (query: `skip`, `limit`) |
 | `GET` | `/health` | Health check |
-| `GET` | `/admin/queues` | Queue stats |
+| `GET` | `/admin/dashboard` | Full system overview (jobs, workers, queues) |
+| `GET` | `/admin/jobs/{job_id}/logs` | Audit trail / logs for a specific job |
+| `GET` | `/admin/errors` | Recent error logs across all jobs |
+| `GET` | `/admin/slowest-jobs` | Top-K slowest completed jobs |
+| `GET` | `/admin/workers` | Worker health and status |
 
 ---
 
@@ -494,19 +498,145 @@ GET /health
 {"status": "ok", "queued_jobs": 0}
 ```
 
-### Queue Stats
+### Dashboard (full system overview)
 
 ```
-GET /admin/queues
+GET /admin/dashboard
 ```
 
 **Response:**
 
 ```json
 {
-  "queued": 0,
-  "active": {},
-  "reserved": {}
+  "total_jobs": 42,
+  "pending_jobs": 3,
+  "processing_jobs": 1,
+  "completed_jobs": 35,
+  "failed_jobs": 3,
+  "avg_processing_seconds": 12.345,
+  "slowest_job_types": [
+    {"job_type": "summarization", "total": 10, "avg_duration_seconds": 18.432},
+    {"job_type": "ocr", "total": 8, "avg_duration_seconds": 14.221}
+  ],
+  "queue_size": 4,
+  "workers": {
+    "workers": [
+      {
+        "id": "...",
+        "worker_name": "celery@myhost.12345",
+        "worker_type": "summarization",
+        "status": "busy",
+        "last_seen_at": "2026-07-07T15:30:00Z",
+        "current_job_id": "...",
+        "jobs_completed": 20,
+        "jobs_failed": 1
+      }
+    ],
+    "total_online": 1,
+    "total_busy": 1,
+    "total_offline": 0
+  }
+}
+```
+
+### Job Logs (audit trail for one job)
+
+```
+GET /admin/jobs/{job_id}/logs?limit=100
+```
+
+**Response:**
+
+```json
+{
+  "logs": [
+    {
+      "id": "...",
+      "job_id": "...",
+      "message": "Job picked up by worker celery@myhost.12345",
+      "level": "info",
+      "created_at": "2026-07-07T15:30:01Z"
+    },
+    {
+      "id": "...",
+      "job_id": "...",
+      "message": "Job completed successfully in 4.231s",
+      "level": "info",
+      "created_at": "2026-07-07T15:30:05Z"
+    }
+  ],
+  "total": 2
+}
+```
+
+### Recent Errors (across all jobs)
+
+```
+GET /admin/errors?limit=50
+```
+
+**Response:**
+
+```json
+[
+  {
+    "id": "...",
+    "job_id": "...",
+    "message": "Attempt 1 failed: model loading error",
+    "level": "error",
+    "created_at": "2026-07-07T15:28:00Z"
+  }
+]
+```
+
+### Slowest Jobs (Top-K)
+
+```
+GET /admin/slowest-jobs?k=10
+```
+
+**Response:**
+
+```json
+[
+  {
+    "job_id": "...",
+    "job_type": "summarization",
+    "duration_seconds": 45.678
+  },
+  {
+    "job_id": "...",
+    "job_type": "ocr",
+    "duration_seconds": 32.101
+  }
+]
+```
+
+### Worker Health
+
+```
+GET /admin/workers
+```
+
+**Response:**
+
+```json
+{
+  "workers": [
+    {
+      "id": "...",
+      "worker_name": "celery@myhost.12345",
+      "worker_type": "general",
+      "status": "online",
+      "last_seen_at": "2026-07-07T15:35:00Z",
+      "current_job_id": null,
+      "jobs_completed": 20,
+      "jobs_failed": 1
+    }
+  ],
+  "total_online": 1,
+  "total_busy": 0,
+  "total_offline": 0
 }
 ```
 
