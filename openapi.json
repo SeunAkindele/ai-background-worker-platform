@@ -5,6 +5,24 @@
         "version": "0.1.0"
     },
     "paths": {
+        "/health": {
+            "get": {
+                "summary": "Health",
+                "operationId": "health_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/jobs": {
             "post": {
                 "tags": [
@@ -127,6 +145,22 @@
                             }
                         }
                     },
+                    "404": {
+                        "description": "Job not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "detail": {
+                                            "type": "string",
+                                            "example": "Job not found"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
                     "422": {
                         "description": "Validation Error",
                         "content": {
@@ -140,32 +174,189 @@
                 }
             }
         },
-        "/health": {
+        "/admin/dashboard": {
             "get": {
-                "summary": "Health",
-                "operationId": "health_health_get",
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Dashboard",
+                "operationId": "dashboard_admin_dashboard_get",
                 "responses": {
                     "200": {
                         "description": "Successful Response",
                         "content": {
                             "application/json": {
-                                "schema": {}
+                                "schema": {
+                                    "$ref": "#/components/schemas/DashboardResponse"
+                                }
                             }
                         }
                     }
                 }
             }
         },
-        "/admin/queues": {
+        "/admin/jobs/{job_id}/logs": {
             "get": {
-                "summary": "Queue Stats",
-                "operationId": "queue_stats_admin_queues_get",
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Get Job Logs",
+                "operationId": "get_job_logs_admin_jobs__job_id__logs_get",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "title": "Job Id"
+                        }
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "default": 100,
+                            "title": "Limit"
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "Successful Response",
                         "content": {
                             "application/json": {
-                                "schema": {}
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobLogListResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/errors": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Recent Errors",
+                "operationId": "recent_errors_admin_errors_get",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "default": 50,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/JobLogResponse"
+                                    },
+                                    "title": "Response Recent Errors Admin Errors Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/slowest-jobs": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Slowest Jobs",
+                "operationId": "slowest_jobs_admin_slowest_jobs_get",
+                "parameters": [
+                    {
+                        "name": "k",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "default": 10,
+                            "title": "K"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/TopKJobResponse"
+                                    },
+                                    "title": "Response Slowest Jobs Admin Slowest Jobs Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/workers": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Worker Health",
+                "operationId": "worker_health_admin_workers_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/WorkerHealthResponse"
+                                }
                             }
                         }
                     }
@@ -175,6 +366,25 @@
     },
     "components": {
         "schemas": {
+            "HealthResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "title": "Status",
+                        "example": "ok"
+                    },
+                    "queued_jobs": {
+                        "type": "integer",
+                        "title": "Queued Jobs"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "queued_jobs"
+                ],
+                "title": "HealthResponse"
+            },
             "HTTPValidationError": {
                 "properties": {
                     "detail": {
@@ -330,6 +540,285 @@
                     "recommendations"
                 ],
                 "title": "JobType"
+            },
+            "LogLevel": {
+                "type": "string",
+                "enum": [
+                    "info",
+                    "warning",
+                    "error",
+                    "debug"
+                ],
+                "title": "LogLevel"
+            },
+            "WorkerStatus": {
+                "type": "string",
+                "enum": [
+                    "online",
+                    "busy",
+                    "offline"
+                ],
+                "title": "WorkerStatus"
+            },
+            "JobLogResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Id"
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Job Id"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "level": {
+                        "$ref": "#/components/schemas/LogLevel"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "job_id",
+                    "message",
+                    "level",
+                    "created_at"
+                ],
+                "title": "JobLogResponse"
+            },
+            "JobLogListResponse": {
+                "properties": {
+                    "logs": {
+                        "items": {
+                            "$ref": "#/components/schemas/JobLogResponse"
+                        },
+                        "type": "array",
+                        "title": "Logs"
+                    },
+                    "total": {
+                        "type": "integer",
+                        "title": "Total"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "logs",
+                    "total"
+                ],
+                "title": "JobLogListResponse"
+            },
+            "WorkerHeartbeatResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Id"
+                    },
+                    "worker_name": {
+                        "type": "string",
+                        "title": "Worker Name"
+                    },
+                    "worker_type": {
+                        "type": "string",
+                        "title": "Worker Type"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/WorkerStatus"
+                    },
+                    "last_seen_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Last Seen At"
+                    },
+                    "current_job_id": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "uuid"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Current Job Id"
+                    },
+                    "jobs_completed": {
+                        "type": "integer",
+                        "title": "Jobs Completed"
+                    },
+                    "jobs_failed": {
+                        "type": "integer",
+                        "title": "Jobs Failed"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "worker_name",
+                    "worker_type",
+                    "status",
+                    "last_seen_at",
+                    "current_job_id",
+                    "jobs_completed",
+                    "jobs_failed"
+                ],
+                "title": "WorkerHeartbeatResponse"
+            },
+            "WorkerHealthResponse": {
+                "properties": {
+                    "workers": {
+                        "items": {
+                            "$ref": "#/components/schemas/WorkerHeartbeatResponse"
+                        },
+                        "type": "array",
+                        "title": "Workers"
+                    },
+                    "total_online": {
+                        "type": "integer",
+                        "title": "Total Online"
+                    },
+                    "total_busy": {
+                        "type": "integer",
+                        "title": "Total Busy"
+                    },
+                    "total_offline": {
+                        "type": "integer",
+                        "title": "Total Offline"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "workers",
+                    "total_online",
+                    "total_busy",
+                    "total_offline"
+                ],
+                "title": "WorkerHealthResponse"
+            },
+            "JobTypeStats": {
+                "properties": {
+                    "job_type": {
+                        "type": "string",
+                        "title": "Job Type"
+                    },
+                    "total": {
+                        "type": "integer",
+                        "title": "Total"
+                    },
+                    "avg_duration_seconds": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Avg Duration Seconds"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "job_type",
+                    "total",
+                    "avg_duration_seconds"
+                ],
+                "title": "JobTypeStats"
+            },
+            "DashboardResponse": {
+                "properties": {
+                    "total_jobs": {
+                        "type": "integer",
+                        "title": "Total Jobs"
+                    },
+                    "pending_jobs": {
+                        "type": "integer",
+                        "title": "Pending Jobs"
+                    },
+                    "processing_jobs": {
+                        "type": "integer",
+                        "title": "Processing Jobs"
+                    },
+                    "completed_jobs": {
+                        "type": "integer",
+                        "title": "Completed Jobs"
+                    },
+                    "failed_jobs": {
+                        "type": "integer",
+                        "title": "Failed Jobs"
+                    },
+                    "avg_processing_seconds": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Avg Processing Seconds"
+                    },
+                    "slowest_job_types": {
+                        "items": {
+                            "$ref": "#/components/schemas/JobTypeStats"
+                        },
+                        "type": "array",
+                        "title": "Slowest Job Types"
+                    },
+                    "queue_size": {
+                        "type": "integer",
+                        "title": "Queue Size"
+                    },
+                    "workers": {
+                        "$ref": "#/components/schemas/WorkerHealthResponse"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "total_jobs",
+                    "pending_jobs",
+                    "processing_jobs",
+                    "completed_jobs",
+                    "failed_jobs",
+                    "avg_processing_seconds",
+                    "slowest_job_types",
+                    "queue_size",
+                    "workers"
+                ],
+                "title": "DashboardResponse"
+            },
+            "TopKJobResponse": {
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Job Id"
+                    },
+                    "job_type": {
+                        "type": "string",
+                        "title": "Job Type"
+                    },
+                    "duration_seconds": {
+                        "type": "number",
+                        "title": "Duration Seconds"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "job_id",
+                    "job_type",
+                    "duration_seconds"
+                ],
+                "title": "TopKJobResponse"
             },
             "ValidationError": {
                 "properties": {
