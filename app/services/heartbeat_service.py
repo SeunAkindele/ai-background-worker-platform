@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.worker_heartbeat import WorkerHeartbeat, WorkerStatus
@@ -155,6 +157,30 @@ class HeartbeatService:
 
         if stale_workers:
             db.commit()
+
+        return len(stale_workers)
+
+    async def async_mark_stale_workers_offline(self, db: AsyncSession) -> int:
+        """
+        Async version of mark_stale_workers_offline for FastAPI routes.
+
+        Same sliding window staleness check — any worker that hasn't pinged
+        within HEARTBEAT_TIMEOUT is marked OFFLINE.
+        """
+        cutoff = datetime.now(timezone.utc) - HEARTBEAT_TIMEOUT
+        stmt = select(WorkerHeartbeat).where(
+            WorkerHeartbeat.last_seen_at < cutoff,
+            WorkerHeartbeat.status != WorkerStatus.OFFLINE,
+        )
+        result = await db.execute(stmt)
+        stale_workers = list(result.scalars().all())
+
+        for worker in stale_workers:
+            worker.status = WorkerStatus.OFFLINE
+            worker.current_job_id = None
+
+        if stale_workers:
+            await db.commit()
 
         return len(stale_workers)
 

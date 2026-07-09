@@ -690,9 +690,70 @@ All `POST /jobs` requests accept an optional `priority` field:
 
 ---
 
+## 9. Rate Limiting (Stage 8)
+
+All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
+
+### Rate limit exceeded (429)
+
+When you exceed the limit, any endpoint returns:
+
+```
+HTTP/1.1 429 Too Many Requests
+```
+
+**Response:**
+
+```json
+{
+  "detail": {
+    "error": "Rate limit exceeded",
+    "limit": 20,
+    "window_seconds": 60,
+    "current_count": 21
+  }
+}
+```
+
+### Backpressure — too many pending jobs (429)
+
+When `POST /jobs` is called and there are already too many pending jobs (default: 50):
+
+```
+HTTP/1.1 429 Too Many Requests
+```
+
+**Response:**
+
+```json
+{
+  "detail": {
+    "error": "Too many pending jobs",
+    "pending_count": 50,
+    "limit": 50
+  }
+}
+```
+
+### Testing rate limits
+
+To trigger the rate limit, send rapid requests:
+
+```bash
+for i in $(seq 1 25); do
+  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/jobs
+done
+```
+
+Requests 1-20 return `200`, requests 21+ return `429`.
+
+---
+
 ## Notes
 
 - **Summarization** and **Embeddings** workers download ML models on first use (~1.6GB and ~80MB respectively). First job will be slow.
 - **OCR** requires Tesseract installed on the system (`brew install tesseract`). Without it, returns simulated output.
 - **Transcription** is currently simulated — distributes provided `text` across time chunks. Real Whisper integration comes in Stage 9.
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
+- **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
+- **Backpressure** — `POST /jobs` rejects with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).

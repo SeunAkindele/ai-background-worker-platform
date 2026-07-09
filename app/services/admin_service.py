@@ -1,11 +1,12 @@
 import heapq
 
-from sqlalchemy import func
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import redis_client
 from app.models.job import Job, JobStatus
-from app.models.worker_heartbeat import WorkerStatus
+from app.models.worker_heartbeat import WorkerHeartbeat, WorkerStatus
 from app.schemas.admin_schema import (
     DashboardResponse,
     JobTypeStats,
@@ -17,20 +18,36 @@ from app.services.heartbeat_service import heartbeat_service
 
 
 class AdminService:
-    def get_dashboard(self, db: Session) -> DashboardResponse:
-        """
-        Aggregate metrics across jobs, workers, and queues.
+    # ==============================================================
+    # ASYNC methods — used by FastAPI routes
+    # ==============================================================
 
-        DSA: Hash map aggregation.
-        We're building a frequency map (status → count) with a single
-        GROUP BY query. PostgreSQL does this with a hash aggregate internally —
-        same concept as counting word frequencies with a dict in Python.
+    async def async_get_dashboard(self, db: AsyncSession) -> DashboardResponse:
         """
-        status_counts = dict(
-            db.query(Job.status, func.count(Job.id))
+        Python Internals Focus:
+        -----------------------
+        Multiple awaits in sequence:
+            status_counts = await ...
+            avg_seconds = await ...
+            slowest = await ...
+
+        Each `await` is a suspension point. The event loop can interleave
+        other coroutines between them. This is cooperative multitasking:
+        coroutines explicitly yield control at await points.
+
+        If you wanted these queries to run in PARALLEL (not just concurrently
+        with other requests, but truly overlapping each other), you'd use:
+            results = await asyncio.gather(query1, query2, query3)
+
+        But for DB queries on the same connection, sequential is usually fine
+        because PostgreSQL processes queries from one connection serially anyway.
+        """
+        stmt = (
+            select(Job.status, func.count(Job.id))
             .group_by(Job.status)
-            .all()
         )
+        result = await db.execute(stmt)
+        status_counts = dict(result.all())
 
         total = sum(status_counts.values())
         pending = status_counts.get(JobStatus.PENDING, 0)
@@ -38,10 +55,10 @@ class AdminService:
         completed = status_counts.get(JobStatus.COMPLETED, 0)
         failed = status_counts.get(JobStatus.FAILED, 0)
 
-        avg_seconds = self._avg_processing_time(db)
-        slowest = self._slowest_job_types(db, k=5)
+        avg_seconds = await self._async_avg_processing_time(db)
+        slowest = await self._async_slowest_job_types(db, k=5)
         queue_size = self._get_queue_size()
-        workers = self.get_worker_health(db)
+        workers = await self.async_get_worker_health(db)
 
         return DashboardResponse(
             total_jobs=total,
@@ -55,36 +72,24 @@ class AdminService:
             workers=workers,
         )
 
-    def get_top_k_slowest_jobs(
-        self, db: Session, k: int = 10
+    async def async_get_top_k_slowest_jobs(
+        self, db: AsyncSession, skip: int = 0, limit: int = 10
     ) -> list[TopKJobResponse]:
         """
-        DSA: Top-K using a heap.
-
-        Find the K slowest completed jobs without sorting the entire table.
-
-        Algorithm (conceptually, even though SQL does the work):
-        1. Compute duration for each completed job
-        2. Use a min-heap of size k
-        3. For each job: if duration > heap min, replace
-        4. Result: k largest durations
-
-        Time: O(n log k) — better than O(n log n) full sort when k << n
-        Space: O(k)
-
-        We demonstrate this both via SQL (practical) and Python (educational).
+        DSA: Top-K using a min-heap (same logic as sync version).
         """
-        completed_jobs = (
-            db.query(
+        stmt = (
+            select(
                 Job.id,
                 Job.job_type,
-                func.extract(
-                    "epoch", Job.updated_at - Job.created_at
-                ).label("duration_seconds"),
+                func.extract("epoch", Job.updated_at - Job.created_at).label(
+                    "duration_seconds"
+                ),
             )
-            .filter(Job.status == JobStatus.COMPLETED)
-            .all()
+            .where(Job.status == JobStatus.COMPLETED)
         )
+        result = await db.execute(stmt)
+        completed_jobs = result.all()
 
         if not completed_jobs:
             return []
@@ -94,7 +99,8 @@ class AdminService:
             for row in completed_jobs
         ]
 
-        top_k = heapq.nlargest(k, job_tuples, key=lambda x: x[0])
+        top_k = heapq.nlargest(skip + limit, job_tuples, key=lambda x: x[0])
+        page = top_k[skip : skip + limit]
 
         return [
             TopKJobResponse(
@@ -102,48 +108,67 @@ class AdminService:
                 job_type=job_type.value,
                 duration_seconds=round(duration, 3),
             )
-            for duration, job_id, job_type in top_k
+            for duration, job_id, job_type in page
         ]
 
-    def _avg_processing_time(self, db: Session) -> float | None:
-        result = db.query(
-            func.avg(
-                func.extract("epoch", Job.updated_at - Job.created_at)
+    async def async_get_worker_health(self, db: AsyncSession) -> WorkerHealthResponse:
+        await heartbeat_service.async_mark_stale_workers_offline(db)
+
+        stmt = select(WorkerHeartbeat)
+        result = await db.execute(stmt)
+        workers = result.scalars().all()
+
+        responses = [
+            WorkerHeartbeatResponse.model_validate(w) for w in workers
+        ]
+        return WorkerHealthResponse(
+            workers=responses,
+            total_online=sum(1 for w in workers if w.status == WorkerStatus.ONLINE),
+            total_busy=sum(1 for w in workers if w.status == WorkerStatus.BUSY),
+            total_offline=sum(1 for w in workers if w.status == WorkerStatus.OFFLINE),
+        )
+
+    async def _async_avg_processing_time(self, db: AsyncSession) -> float | None:
+        stmt = (
+            select(
+                func.avg(func.extract("epoch", Job.updated_at - Job.created_at))
             )
-        ).filter(Job.status == JobStatus.COMPLETED).scalar()
+            .where(Job.status == JobStatus.COMPLETED)
+        )
+        result = await db.execute(stmt)
+        value = result.scalar_one_or_none()
+        return round(float(value), 3) if value else None
 
-        return round(float(result), 3) if result else None
-
-    def _slowest_job_types(
-        self, db: Session, k: int = 5
+    async def _async_slowest_job_types(
+        self, db: AsyncSession, k: int = 5
     ) -> list[JobTypeStats]:
-        """
-        DSA: GROUP BY + aggregation = building a hash map of
-        {job_type: (count, avg_duration)}, then sorting by avg_duration.
-        """
-        rows = (
-            db.query(
+        stmt = (
+            select(
                 Job.job_type,
                 func.count(Job.id).label("total"),
                 func.avg(
                     func.extract("epoch", Job.updated_at - Job.created_at)
                 ).label("avg_duration"),
             )
-            .filter(Job.status == JobStatus.COMPLETED)
+            .where(Job.status == JobStatus.COMPLETED)
             .group_by(Job.job_type)
-            .all()
         )
+        result = await db.execute(stmt)
+        rows = result.all()
 
         stats = [
             JobTypeStats(
                 job_type=row.job_type.value,
                 total=row.total,
-                avg_duration_seconds=round(float(row.avg_duration), 3) if row.avg_duration else None,
+                avg_duration_seconds=round(float(row.avg_duration), 3)
+                if row.avg_duration
+                else None,
             )
             for row in rows
         ]
 
         return heapq.nlargest(k, stats, key=lambda s: s.avg_duration_seconds or 0)
+
 
     def _get_queue_size(self) -> int:
         try:
@@ -153,23 +178,6 @@ class AdminService:
             return high + normal + low
         except Exception:
             return -1
-
-    def get_worker_health(self, db: Session) -> WorkerHealthResponse:
-        heartbeat_service.mark_stale_workers_offline(db)
-        return self._build_worker_health(db)
-
-    def _build_worker_health(self, db: Session) -> WorkerHealthResponse:
-        workers = heartbeat_service.get_all_workers(db)
-        responses = [
-            WorkerHeartbeatResponse.model_validate(w) for w in workers
-        ]
-
-        return WorkerHealthResponse(
-            workers=responses,
-            total_online=sum(1 for w in workers if w.status == WorkerStatus.ONLINE),
-            total_busy=sum(1 for w in workers if w.status == WorkerStatus.BUSY),
-            total_offline=sum(1 for w in workers if w.status == WorkerStatus.OFFLINE),
-        )
 
 
 admin_service = AdminService()

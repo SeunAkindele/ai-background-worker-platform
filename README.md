@@ -2,38 +2,131 @@
 
 A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
 
-**Current branch:** `feat/stage-7`  
-**Current stage:** Stage 7 — Observability and Admin Controls
+**Current branch:** `feat/stage-8`  
+**Current stage:** Stage 8 — Async FastAPI + Rate Limiting
 
-## Stage 7 scope (this branch)
+## Stage 8 scope (this branch)
 
-Stage 7 makes the platform **debuggable and observable**. Every job now has a structured audit trail (`job_logs`), every worker process sends periodic heartbeats (`worker_heartbeats`), and a new admin API exposes dashboards, error logs, slowest-job rankings, and worker health.
+Stage 8 makes the API layer **non-blocking and protected**. All routes are now `async def` backed by an async SQLAlchemy engine (`asyncpg`), allowing hundreds of concurrent connections without thread exhaustion. A Redis-based sliding window rate limiter protects every endpoint, and a backpressure mechanism prevents any single client from flooding the queue.
 
 | Area | Status |
 |------|--------|
-| FastAPI HTTP API | Done |
-| PostgreSQL job persistence (SQLAlchemy) | Done |
-| Celery task dispatch with retry backoff | Done |
-| Idempotent task execution | Done |
-| `BaseJobHandler` ABC contract (validate → process → format) | Done |
-| All 5 AI workers (summarization, embeddings, OCR, transcription, recommendations) | Done |
-| Handler registry with lazy singleton instantiation | Done |
-| Per-job-type input validation at API level | Done |
-| Job priority with Celery named queues (`high`, `normal`, `low`) | Done |
-| Job lifecycle: `pending` → `processing` → `completed` \| `failed` | Done |
-| **`job_logs` table — structured per-job audit trail** | **Done** |
-| **`worker_heartbeats` table — worker liveness tracking** | **Done** |
-| **Periodic heartbeat thread — idle workers stay ONLINE** | **Done** |
-| **Graceful shutdown — workers marked OFFLINE immediately on exit** | **Done** |
-| **Exponential backoff on heartbeat DB failures** | **Done** |
-| **Admin dashboard endpoint — job counts, queue size, worker health** | **Done** |
-| **Job logs endpoint — audit trail per job** | **Done** |
-| **Recent errors endpoint — latest failures across all jobs** | **Done** |
-| **Slowest jobs endpoint — Top-K via heap** | **Done** |
-| **Worker health endpoint — live status of all workers** | **Done** |
-| **Timing context manager (`timed_block`)** | **Done** |
-| **Monitoring decorator (`monitor_task`)** | **Done** |
-| Legacy Redis queue (`RedisJobQueue`, `redis_worker`) | Retained but bypassed |
+| **Async FastAPI routes (`async def` + `await`)** | **Done** |
+| **Async SQLAlchemy engine (`asyncpg` driver)** | **Done** |
+| **Async DB dependency (`get_async_db`)** | **Done** |
+| **Async service methods (`async_create_job`, `async_get_job`, etc.)** | **Done** |
+| **Sliding window rate limiter (Redis-based, per-client IP)** | **Done** |
+| **Backpressure: max pending jobs limit** | **Done** |
+| **429 Too Many Requests responses** | **Done** |
+| **Async engine disposal on shutdown** | **Done** |
+| Workers remain synchronous (CPU-bound, separate processes) | Intentional |
+
+### What changed from Stage 7
+
+| Stage 7 | Stage 8 |
+|---------|---------|
+| Sync routes (`def`) block a thread per request | **Async routes (`async def`)** — event loop handles hundreds concurrently |
+| `psycopg2` only (sync driver) | Added **`asyncpg`** (async driver) for API; workers still use `psycopg2` |
+| Single `get_db` dependency | Added **`get_async_db`** (async session) for routes |
+| No request throttling | **Sliding window rate limiter** — 20 req/min per client (configurable) |
+| No queue backpressure | **Max pending jobs limit** — rejects new submissions when queue is full |
+| No 429 responses | All endpoints return **429 Too Many Requests** when limits exceeded |
+| Services only had sync methods | Services now have **dual interface** (async for API, sync for workers) |
+| `SQLAlchemy .query()` in routes | Routes use **SQLAlchemy 2.0 `select()` API** (required for async) |
+
+### Architecture (Stage 8)
+
+```
+Client
+  │
+  │  (rate limit: sliding window counter in Redis)
+  │  (backpressure: max pending jobs check)
+  │
+  ▼
+FastAPI (async)  ──►  PostgreSQL (via asyncpg — non-blocking)
+  │                     ├── jobs
+  │                     ├── job_logs
+  │                     └── worker_heartbeats
+  │
+  ├──►  /jobs (POST)          → rate limit → backpressure check → async create
+  ├──►  /jobs/{id} (GET)      → rate limit → async fetch
+  ├──►  /admin/dashboard      → rate limit → async aggregation
+  ├──►  /admin/workers        → rate limit → async staleness check + fetch
+  │
+  └──►  celery_app.send_task("process_job", [job_id], queue=priority)
+            │                              ↑ still sync (< 1ms Redis LPUSH)
+            ▼
+       Redis (Celery broker)    Redis (rate limit keys: rate:{client}:{window})
+            │
+            ▼
+       Celery worker (SYNC — separate process, CPU-bound AI work)
+            ├── uses psycopg2 (sync driver)
+            ├── uses db_session() (sync context manager)
+            └── unchanged from Stage 7
+```
+
+### Rate limiting (DSA: sliding window counter)
+
+```
+Algorithm:
+1. Time divided into fixed windows (default 60s)
+2. Each window has a Redis key: rate:{client_ip}:{window_number}
+3. Estimated rate = prev_window_count × overlap_fraction + curr_window_count
+4. If estimated_rate >= limit → reject with 429
+
+Why sliding window (not fixed window)?
+- Fixed window allows burst at boundaries: 20 req at second 59 + 20 at second 61 = 40 in 2s
+- Sliding window smooths this by weighting the previous window's count
+```
+
+### Backpressure
+
+```
+On POST /jobs:
+1. Count pending jobs in PostgreSQL
+2. If count >= max_pending_jobs_per_user (default 50) → reject with 429
+3. Otherwise → create the job
+
+This prevents:
+- Queue starvation (one client flooding the queue)
+- Unbounded memory growth in Redis
+- Worker overload
+```
+
+### Python internals learned in Stage 8
+
+| Concept | Where Used |
+|---------|-----------|
+| `async def` / `await` | All API routes — coroutines that suspend on I/O |
+| Event loop | Uvicorn's asyncio loop handles hundreds of concurrent requests on one thread |
+| Async generators (`async def` + `yield`) | `get_async_db` — FastAPI uses it as async context manager dependency |
+| `@property` descriptor | `config.py` — `async_database_url` derived from `database_url` |
+| Coroutine cost (~200 bytes) vs thread cost (~8MB) | Why async scales for I/O-bound API work |
+| GIL irrelevance for async | Async is single-threaded by design; GIL only matters for threads |
+| When NOT to use async | CPU-bound worker code — async adds overhead with zero benefit |
+| SQLAlchemy 2.0 `select()` API | Required for async sessions (`.query()` triggers sync I/O internally) |
+
+### DSA concepts in Stage 8
+
+| Concept | Where Used | Complexity |
+|---------|-----------|-----------|
+| Sliding window counter | `rate_limiter.py` — per-client rate limiting | O(1) per check |
+| Token bucket (alternative) | Discussed in rate_limiter.py comments | O(1) per check |
+| Backpressure / bounded buffer | `dependencies.py` — max pending jobs | O(1) query (indexed) |
+| DAG resolution | FastAPI dependency graph (Depends chain) | Framework-level |
+| Atomic increment | Redis `INCR` — no race conditions | O(1) |
+
+## Previous stages
+
+| Stage | Theme | Key Additions |
+|-------|-------|---------------|
+| 1 | FastAPI + PostgreSQL | Job CRUD, in-memory FIFO queue, clean structure |
+| 2 | Local worker | Priority queue (`heapq`), fake worker, decorators |
+| 3 | Redis queue | `RedisJobQueue`, producer-consumer, Docker Compose |
+| 4 | Real summarization | HF BART model, sliding window chunking, lazy loading |
+| 5 | Celery | Task dispatch, retry backoff, named queues, idempotency |
+| 6 | Multi-worker platform | `BaseJobHandler` ABC, all 5 AI handlers, lazy registry |
+| 7 | Observability | `job_logs`, `worker_heartbeats`, admin API, timing decorators |
 
 ### Architecture (Stage 7)
 
@@ -338,11 +431,12 @@ The Celery worker runs in its own process, picks up tasks from the Redis broker,
 ```
 app/
 ├── api/
-│   ├── jobs.py                        # Job CRUD endpoints
-│   └── admin.py                       # Admin dashboard, logs, errors, workers (Stage 7)
+│   ├── jobs.py                        # Async job CRUD endpoints + rate limiting (Stage 8)
+│   └── admin.py                       # Async admin endpoints + rate limiting (Stage 8)
 ├── core/
-│   ├── database.py                    # SQLAlchemy engine, sessions, db_session context manager
-│   ├── queue.py                       # RedisJobQueue (legacy — retained, not on active path)
+│   ├── database.py                    # Sync + async engines, sessions, dependencies (Stage 8)
+│   ├── rate_limiter.py                # Sliding window counter rate limiter (Stage 8)
+│   ├── dependencies.py                # Rate limit + backpressure FastAPI deps (Stage 8)
 │   └── redis_client.py                # Shared Redis connection
 ├── models/
 │   ├── __init__.py                    # Imports all models for create_all
@@ -353,10 +447,10 @@ app/
 │   ├── job_schema.py                  # Pydantic request/response + per-type input validation
 │   └── admin_schema.py                # Admin response schemas (Stage 7)
 ├── services/
-│   ├── job_service.py                 # Job CRUD + Celery dispatch
-│   ├── log_service.py                 # Job log CRUD (Stage 7)
-│   ├── heartbeat_service.py           # Worker heartbeat upsert, pulse, staleness (Stage 7)
-│   └── admin_service.py               # Dashboard aggregation, Top-K (Stage 7)
+│   ├── job_service.py                 # Async + sync job CRUD + Celery dispatch (Stage 8)
+│   ├── log_service.py                 # Async + sync job log queries (Stage 8)
+│   ├── heartbeat_service.py           # Async + sync heartbeat ops (Stage 8)
+│   └── admin_service.py               # Async + sync dashboard aggregation (Stage 8)
 ├── workers/
 │   ├── base.py                        # BaseJobHandler ABC (Stage 6)
 │   ├── celery_app.py                  # Celery configuration + signal registration (Stage 5/7)
@@ -369,14 +463,13 @@ app/
 │   ├── embedding_worker.py            # EmbeddingHandler: vectors + cosine similarity (Stage 6)
 │   ├── ocr_worker.py                  # OCRHandler: batch pipeline + Pillow (Stage 6)
 │   ├── transcription_worker.py        # TranscriptionHandler: merge intervals (Stage 6)
-│   ├── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
-│   └── redis_worker.py                # Standalone Redis poll worker (legacy)
-├── config.py
-└── main.py                            # API only — worker is started separately
+│   └── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
+├── config.py                          # Settings + async_database_url property (Stage 8)
+└── main.py                            # Async lifespan, engine disposal (Stage 8)
 tests/
 ├── conftest.py                        # Test client, DB reset, fakeredis queue fixture
 ├── test_jobs.py
-├── test_redis_queue.py                # Priority ordering, FIFO, cross-client dequeue
+├── test_redis_queue.py
 ├── test_worker.py
 └── test_summarization.py              # chunk_text() + summarize() (model mocked)
 docker-compose.yml                     # PostgreSQL + Redis
@@ -489,29 +582,30 @@ Coverage includes job CRUD, Redis queue ordering (HIGH before NORMAL, FIFO tie-b
 
 ## Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `REDIS_URL` | Redis connection string (used by both Celery broker and legacy queue) |
-| `APP_ENV` | `development` or `test` |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | — |
+| `REDIS_URL` | Redis connection string (Celery broker + rate limiter) | — |
+| `APP_ENV` | `development` or `test` | `development` |
+| `RATE_LIMIT_REQUESTS` | Max requests per client per window | `20` |
+| `RATE_LIMIT_WINDOW_SECONDS` | Rate limit window duration | `60` |
+| `MAX_PENDING_JOBS_PER_USER` | Max pending jobs before rejecting new submissions | `50` |
 
 See `.env.example` and `.env.test.example` for templates.
 
-## What changed from Stage 6
+## What changed from Stage 7
 
-| Stage 6 | Stage 7 |
+| Stage 7 | Stage 8 |
 |---------|---------|
-| No job audit trail | **`job_logs` table** — structured per-job logs with level and timestamp |
-| No worker health tracking | **`worker_heartbeats` table** — liveness, status, counters, current job |
-| Workers invisible to the API | **5 admin endpoints** — dashboard, logs, errors, slowest jobs, workers |
-| No timing instrumentation | **`timed_block` context manager** — exact processing duration per job |
-| `tasks.py` only updates job status | `tasks.py` now also writes logs, sends heartbeats, records timing |
-| Single `log_execution_time` decorator | Added **`monitor_task`** decorator and **`TimerResult`** with `__slots__` |
-| No worker identity system | **`worker_identity.py`** — stable `celery@host.pid` name per process |
-| No lifecycle signals | **`worker_signals.py`** — heartbeat thread, graceful shutdown, backoff |
-| No admin router | **`admin.py`** router with dashboard, logs, errors, slowest-jobs, workers |
-| `main.py` had inline `/admin/queues` | Replaced by proper admin router |
-| New files: — | `job_log.py`, `worker_heartbeat.py`, `admin_schema.py`, `log_service.py`, `heartbeat_service.py`, `admin_service.py`, `admin.py`, `worker_identity.py`, `worker_signals.py` |
-| New tables: — | `job_logs`, `worker_heartbeats` |
+| Sync routes (`def`) | **Async routes (`async def`)** — non-blocking I/O |
+| `psycopg2` only | Added **`asyncpg`** driver for API routes |
+| `get_db` (sync dependency) | Added **`get_async_db`** (async session dependency) |
+| No rate limiting | **Sliding window counter** — per-client-IP via Redis |
+| No backpressure | **Max pending jobs limit** — rejects when queue is full |
+| No 429 responses | **429 Too Many Requests** on rate limit or backpressure |
+| Services: sync only | Services: **dual interface** (async for API, sync for workers) |
+| `.query()` style in routes | **`select()` + `await db.execute()`** (SQLAlchemy 2.0 async API) |
+| New files: — | `rate_limiter.py`, `dependencies.py` |
+| New deps: — | `sqlalchemy[asyncio]`, `asyncpg` |
 
-> Stage 7 adds the **observability layer** on top of the existing worker and API layers. The worker handlers (`base.py`, all 5 `*_worker.py` files) are completely unchanged. The job model and schema are unchanged. `tasks.py` gained logging/heartbeat calls but the core flow (pick up → process → succeed/fail) is the same.
+> Stage 8 makes the **API layer efficient** without touching the workers. Workers remain synchronous (CPU-bound AI work doesn't benefit from async). The worker handlers, task flow, heartbeat system, and observability are all unchanged.

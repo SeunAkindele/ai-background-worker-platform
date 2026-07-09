@@ -2,7 +2,7 @@
     "openapi": "3.1.0",
     "info": {
         "title": "AI Background Worker Platform",
-        "version": "0.1.0"
+        "version": "0.8.0"
     },
     "paths": {
         "/health": {
@@ -60,6 +60,16 @@
                                 }
                             }
                         }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded or too many pending jobs",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RateLimitError"
+                                }
+                            }
+                        }
                     }
                 }
             },
@@ -108,6 +118,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RateLimitError"
                                 }
                             }
                         }
@@ -170,6 +190,16 @@
                                 }
                             }
                         }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RateLimitError"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -188,6 +218,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/DashboardResponse"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RateLimitError"
                                 }
                             }
                         }
@@ -244,6 +284,16 @@
                                 }
                             }
                         }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RateLimitError"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -288,6 +338,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RateLimitError"
                                 }
                             }
                         }
@@ -338,6 +398,16 @@
                                 }
                             }
                         }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RateLimitError"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -356,6 +426,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/WorkerHealthResponse"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RateLimitError"
                                 }
                             }
                         }
@@ -859,6 +939,49 @@
                     "type"
                 ],
                 "title": "ValidationError"
+            },
+            "RateLimitError": {
+                "properties": {
+                    "detail": {
+                        "type": "object",
+                        "properties": {
+                            "error": {
+                                "type": "string",
+                                "title": "Error",
+                                "example": "Rate limit exceeded"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "title": "Limit",
+                                "example": 20
+                            },
+                            "window_seconds": {
+                                "type": "integer",
+                                "title": "Window Seconds",
+                                "example": 60
+                            },
+                            "current_count": {
+                                "type": "integer",
+                                "title": "Current Count",
+                                "example": 21
+                            },
+                            "pending_count": {
+                                "type": "integer",
+                                "title": "Pending Count",
+                                "description": "Present only for backpressure errors"
+                            }
+                        },
+                        "required": [
+                            "error"
+                        ],
+                        "title": "Detail"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "detail"
+                ],
+                "title": "RateLimitError"
             }
         }
     }
