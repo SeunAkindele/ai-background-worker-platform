@@ -16,7 +16,7 @@ Stage 8 makes the API layer **non-blocking and protected**. All routes are now `
 | **Async DB dependency (`get_async_db`)** | **Done** |
 | **Async service methods (`async_create_job`, `async_get_job`, etc.)** | **Done** |
 | **Sliding window rate limiter (Redis-based, per-client IP)** | **Done** |
-| **Backpressure: max pending jobs limit** | **Done** |
+| **Backpressure: max pending jobs limit (global)** | **Done** |
 | **429 Too Many Requests responses** | **Done** |
 | **Async engine disposal on shutdown** | **Done** |
 | Workers remain synchronous (CPU-bound, separate processes) | Intentional |
@@ -29,10 +29,12 @@ Stage 8 makes the API layer **non-blocking and protected**. All routes are now `
 | `psycopg2` only (sync driver) | Added **`asyncpg`** (async driver) for API; workers still use `psycopg2` |
 | Single `get_db` dependency | Added **`get_async_db`** (async session) for routes |
 | No request throttling | **Sliding window rate limiter** — 20 req/min per client (configurable) |
-| No queue backpressure | **Max pending jobs limit** — rejects new submissions when queue is full |
+| No queue backpressure | **Max pending jobs limit** — rejects new submissions when global pending count is full |
 | No 429 responses | All endpoints return **429 Too Many Requests** when limits exceeded |
 | Services only had sync methods | Services now have **dual interface** (async for API, sync for workers) |
 | `SQLAlchemy .query()` in routes | Routes use **SQLAlchemy 2.0 `select()` API** (required for async) |
+
+> Stage 8 makes the **API layer efficient** without touching the workers. Workers remain synchronous (CPU-bound AI work doesn't benefit from async). The worker handlers, task flow, heartbeat system, and observability are unchanged.
 
 ### Architecture (Stage 8)
 
@@ -83,12 +85,16 @@ Why sliding window (not fixed window)?
 
 ```
 On POST /jobs:
-1. Count pending jobs in PostgreSQL
-2. If count >= max_pending_jobs_per_user (default 50) → reject with 429
+1. Count all pending jobs in PostgreSQL (global, not per-client yet)
+2. If count >= MAX_PENDING_JOBS_PER_USER (default 50) → reject with 429
 3. Otherwise → create the job
 
+Note: the env var name says "per_user" but the current implementation
+counts total pending jobs system-wide. Per-client backpressure would
+require a submitted_by column on the Job model.
+
 This prevents:
-- Queue starvation (one client flooding the queue)
+- Queue starvation (flooding the queue with too many pending jobs)
 - Unbounded memory growth in Redis
 - Worker overload
 ```
@@ -447,10 +453,10 @@ app/
 │   ├── job_schema.py                  # Pydantic request/response + per-type input validation
 │   └── admin_schema.py                # Admin response schemas (Stage 7)
 ├── services/
-│   ├── job_service.py                 # Async + sync job CRUD + Celery dispatch (Stage 8)
-│   ├── log_service.py                 # Async + sync job log queries (Stage 8)
-│   ├── heartbeat_service.py           # Async + sync heartbeat ops (Stage 8)
-│   └── admin_service.py               # Async + sync dashboard aggregation (Stage 8)
+│   ├── job_service.py                 # Async API + sync worker methods + Celery dispatch (Stage 8)
+│   ├── log_service.py                 # Async reads + sync add_log for workers (Stage 8)
+│   ├── heartbeat_service.py           # Async staleness check + sync worker heartbeats (Stage 8)
+│   └── admin_service.py               # Async dashboard aggregation (Stage 8)
 ├── workers/
 │   ├── base.py                        # BaseJobHandler ABC (Stage 6)
 │   ├── celery_app.py                  # Celery configuration + signal registration (Stage 5/7)
@@ -549,9 +555,9 @@ Tables are created automatically on startup via `init_db()`.
 | `GET` | `/jobs/{job_id}` | Fetch a job by UUID |
 | `GET` | `/jobs` | List jobs (`skip`, `limit`; returns `jobs` + `total`) |
 | `GET` | `/admin/dashboard` | Full system overview (job counts, queue size, workers) |
-| `GET` | `/admin/jobs/{job_id}/logs` | Audit trail for a specific job (`limit`) |
-| `GET` | `/admin/errors` | Recent error logs across all jobs (`limit`) |
-| `GET` | `/admin/slowest-jobs` | Top-K slowest completed jobs (`k`) |
+| `GET` | `/admin/jobs/{job_id}/logs` | Audit trail for a specific job (`skip`, `limit`) |
+| `GET` | `/admin/errors` | Recent error logs across all jobs (`skip`, `limit`) |
+| `GET` | `/admin/slowest-jobs` | Slowest completed jobs (`skip`, `limit`) |
 | `GET` | `/admin/workers` | Worker health and status |
 
 **Quick example:**
@@ -578,7 +584,7 @@ Tests use `.env.test`, a dedicated PostgreSQL database, and **fakeredis** (no re
 pytest
 ```
 
-Coverage includes job CRUD, Redis queue ordering (HIGH before NORMAL, FIFO tie-break, separate client instances), end-to-end worker completion via a threaded test worker, and the summarization logic. The summarization tests **mock the Hugging Face pipeline**, so `pytest` stays fast and never downloads the model — they exercise `chunk_text()` (overlap, generator behaviour, edge cases) and `summarize()` (single-chunk vs. multi-chunk, recursive merge, max-depth guard).
+Coverage includes job CRUD (create, get, list, status updates), summarization logic (with the Hugging Face pipeline mocked), and rate-limit/backpressure behaviour via the async API. Legacy tests for the removed in-memory/Redis queue workers (`test_redis_queue.py`, `test_worker.py`) may need updating for the Celery-based path.
 
 ## Environment variables
 
@@ -589,23 +595,6 @@ Coverage includes job CRUD, Redis queue ordering (HIGH before NORMAL, FIFO tie-b
 | `APP_ENV` | `development` or `test` | `development` |
 | `RATE_LIMIT_REQUESTS` | Max requests per client per window | `20` |
 | `RATE_LIMIT_WINDOW_SECONDS` | Rate limit window duration | `60` |
-| `MAX_PENDING_JOBS_PER_USER` | Max pending jobs before rejecting new submissions | `50` |
+| `MAX_PENDING_JOBS_PER_USER` | Max total pending jobs before rejecting new submissions (global count) | `50` |
 
 See `.env.example` and `.env.test.example` for templates.
-
-## What changed from Stage 7
-
-| Stage 7 | Stage 8 |
-|---------|---------|
-| Sync routes (`def`) | **Async routes (`async def`)** — non-blocking I/O |
-| `psycopg2` only | Added **`asyncpg`** driver for API routes |
-| `get_db` (sync dependency) | Added **`get_async_db`** (async session dependency) |
-| No rate limiting | **Sliding window counter** — per-client-IP via Redis |
-| No backpressure | **Max pending jobs limit** — rejects when queue is full |
-| No 429 responses | **429 Too Many Requests** on rate limit or backpressure |
-| Services: sync only | Services: **dual interface** (async for API, sync for workers) |
-| `.query()` style in routes | **`select()` + `await db.execute()`** (SQLAlchemy 2.0 async API) |
-| New files: — | `rate_limiter.py`, `dependencies.py` |
-| New deps: — | `sqlalchemy[asyncio]`, `asyncpg` |
-
-> Stage 8 makes the **API layer efficient** without touching the workers. Workers remain synchronous (CPU-bound AI work doesn't benefit from async). The worker handlers, task flow, heartbeat system, and observability are all unchanged.
