@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from app.api.admin import router as admin_router
 from app.api.jobs import router as jobs_router
+from app.api.uploads import router as uploads_router
 from app.core.database import async_engine, init_db
 
 
@@ -30,11 +31,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Background Worker Platform",
-    version="0.8.0",
+    version="0.9.0",
     lifespan=lifespan,
 )
 
 app.include_router(jobs_router)
+app.include_router(uploads_router)
 app.include_router(admin_router)
 
 

@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     rate_limit_requests: int = 20
     rate_limit_window_seconds: int = 60
     max_pending_jobs_per_user: int = 50
+
+    # Uploads
+    upload_dir: str = "uploads"
+    max_upload_size_bytes: int = 52_428_800  # 50 MB
+    upload_chunk_size: int = 8192  # 8 KB — classic buffer size
+
     @property
     def async_database_url(self) -> str:
         """

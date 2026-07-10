@@ -57,19 +57,39 @@ class JobCreate(BaseModel):
         image = self.input.get("image")
         images = self.input.get("images")
         file_path = self.input.get("file_path")
-        if image is None and images is None and file_path is None:
+        file_id = self.input.get("file_id")
+
+        if image is None and images is None and file_path is None and file_id is None:
             raise ValueError(
-                "OCR requires 'image', 'images', or 'file_path'"
+                "OCR requires 'image', 'images', 'file_path', or 'file_id'"
             )
+
+        if file_id is not None:
+            self._validate_uuid_string(file_id, "file_id")
 
     def _validate_transcription(self):
         file_path = self.input.get("file_path")
         audio_url = self.input.get("audio_url")
         text = self.input.get("text")
-        if file_path is None and audio_url is None and text is None:
+        file_id = self.input.get("file_id")
+
+        if (
+            file_path is None
+            and audio_url is None
+            and text is None
+            and file_id is None
+        ):
             raise ValueError(
-                "Transcription requires 'file_path', 'audio_url', or 'text'"
+                "Transcription requires 'file_path', 'audio_url', 'text', or 'file_id'"
             )
+
+        if file_id is not None:
+            self._validate_uuid_string(file_id, "file_id")
+
+        duration = self.input.get("duration")
+        if duration is not None:
+            if not isinstance(duration, (int, float)) or duration <= 0:
+                raise ValueError("'duration' must be a positive number (seconds)")
 
     def _validate_recommendations(self):
         user_id = self.input.get("user_id")
@@ -78,6 +98,15 @@ class JobCreate(BaseModel):
             raise ValueError("Recommendations require a 'user_id'")
         if interactions is None or not isinstance(interactions, list):
             raise ValueError("Recommendations require 'interactions' (list)")
+
+    @staticmethod
+    def _validate_uuid_string(value: Any, field_name: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError(f"'{field_name}' must be a UUID string")
+        try:
+            UUID(value)
+        except ValueError as exc:
+            raise ValueError(f"'{field_name}' must be a valid UUID") from exc
 
 
 class JobResponse(BaseModel):

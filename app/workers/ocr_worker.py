@@ -1,44 +1,33 @@
 """
-OCR Worker — Stage 6.
-
-DSA Focus:
-----------
-- Batch Processing Pipeline: process multiple images in sequence
-- Image preprocessing as a pipeline pattern (resize → grayscale → threshold → OCR)
-- Queue within a queue: the job itself may contain multiple pages
-
-Python Internals Focus:
------------------------
-- Context managers for temporary file handling
-- Generator for lazy page-by-page processing
-- typing with Literal and TypedDict
+OCR Worker — Stage 6 + Stage 9 file uploads.
 """
+from pathlib import Path
 from typing import Any, Generator
 
 from app.workers.base import BaseJobHandler
 
 
 class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
-    """
-    Extracts text from images using Tesseract OCR.
-
-    Supports:
-    - Single image (base64 or file path)
-    - Batch of images (list of base64 or paths)
-    - Simulated multi-page PDF processing
-    """
-
     def validate_input(self, input_payload: dict[str, Any]) -> None:
         image = input_payload.get("image")
         images = input_payload.get("images")
         file_path = input_payload.get("file_path")
+        file_id = input_payload.get("file_id")
 
-        if image is None and images is None and file_path is None:
+        if (
+            image is None
+            and images is None
+            and file_path is None
+            and file_id is None
+        ):
             raise ValueError(
-                "OCR requires 'image' (base64 string), "
-                "'images' (list of base64 strings), "
-                "or 'file_path' (path to image/PDF)"
+                "OCR requires 'image', 'images', 'file_path', or 'file_id'"
             )
+
+        if file_path is not None:
+            path = Path(file_path)
+            if not path.is_file():
+                raise ValueError(f"File not found: {file_path}")
 
         if images is not None:
             if not isinstance(images, list):
@@ -49,68 +38,50 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                 raise ValueError("Batch limited to 50 images")
 
     def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
-        """
-        DSA: Batch Processing Pipeline.
-
-        Each image goes through a pipeline of transformations:
-        1. Decode (base64 → bytes → PIL Image)
-        2. Preprocess (resize, grayscale, threshold)
-        3. OCR (Tesseract extract)
-        4. Post-process (strip whitespace, confidence)
-
-        For batch: process lazily via generator, collect results.
-        Time complexity: O(n * p) where n = images, p = pixels per image.
-        """
         image = input_payload.get("image")
         images = input_payload.get("images")
         file_path = input_payload.get("file_path")
 
         if file_path is not None:
-            return self._process_file(file_path)
+            result = self._process_file(file_path)
+            result["source"] = {
+                "type": "file",
+                "path": file_path,
+                "original_filename": input_payload.get("original_filename"),
+                "file_type": input_payload.get("file_type"),
+                "file_size": input_payload.get("file_size"),
+            }
+            return result
 
         if image is not None:
             page_result = self._process_single_image(image)
             return {"pages": [page_result], "total_pages": 1}
 
         pages = list(self._process_batch(images))
-
         return {"pages": pages, "total_pages": len(pages)}
 
     def format_result(self, raw_result: dict[str, Any]) -> dict[str, Any]:
         full_text = "\n\n".join(
             page["text"] for page in raw_result["pages"] if page["text"]
         )
-        return {
+        formatted = {
             "text": full_text,
             "pages": raw_result["pages"],
             "total_pages": raw_result["total_pages"],
         }
+        if "source" in raw_result:
+            formatted["source"] = raw_result["source"]
+        return formatted
 
     def _process_batch(
         self, images: list[str]
     ) -> Generator[dict[str, Any], None, None]:
-        """
-        DSA: Generator-based batch processing.
-
-        Why a generator here?
-        - Memory efficient: only one image in memory at a time
-        - If we stored all decoded images simultaneously, memory = O(n * image_size)
-        - With a generator, memory = O(image_size) constant
-
-        This is the same pattern used in data pipelines (ETL, ML training).
-        """
         for idx, image_data in enumerate(images):
             yield self._process_single_image(image_data, page_number=idx + 1)
 
     def _process_single_image(
         self, image_data: str, page_number: int = 1
     ) -> dict[str, Any]:
-        """
-        Pipeline: decode → preprocess → OCR → post-process.
-
-        Currently uses Pillow + pytesseract.
-        Falls back to simulated output if tesseract is not installed.
-        """
         try:
             import base64
             import io
@@ -119,7 +90,6 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
             image_bytes = base64.b64decode(image_data)
             image = Image.open(io.BytesIO(image_bytes))
-
             image = self._preprocess_image(image)
 
             try:
@@ -147,17 +117,6 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             }
 
     def _preprocess_image(self, image):
-        """
-        Image preprocessing pipeline.
-
-        Steps:
-        1. Convert to grayscale (reduces noise, speeds up OCR)
-        2. Resize if too large (saves memory + compute)
-        3. Apply threshold (makes text sharper for OCR)
-
-        DSA parallel: this is a linear pipeline — O(pixels) per step,
-        total O(3 * pixels) = O(pixels).
-        """
         from PIL import ImageFilter
 
         if image.mode != "L":
@@ -176,9 +135,10 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         """Process a file from disk (image or multi-page PDF)."""
         try:
             from PIL import Image
-            image = Image.open(file_path)
 
+            image = Image.open(file_path)
             pages = []
+
             try:
                 page_num = 0
                 while True:
@@ -201,7 +161,7 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                     })
                     page_num += 1
             except EOFError:
-                ...
+                pass
 
             if not pages:
                 pages = [{"page": 1, "text": "[no content extracted]", "confidence": 0.0}]
@@ -216,7 +176,6 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
     @staticmethod
     def _estimate_confidence(image, text: str) -> float:
-        """Heuristic confidence based on text density."""
         if not text.strip():
             return 0.0
         char_count = len(text.strip())

@@ -2,33 +2,16 @@
     "openapi": "3.1.0",
     "info": {
         "title": "AI Background Worker Platform",
-        "version": "0.8.0"
+        "version": "0.9.0"
     },
     "paths": {
-        "/health": {
-            "get": {
-                "summary": "Health",
-                "operationId": "health_health_get",
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HealthResponse"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/jobs": {
             "post": {
                 "tags": [
                     "jobs"
                 ],
                 "summary": "Create Job",
+                "description": "Submit a new job.\n\nPython Internals Focus:\n-----------------------\nThis is now `async def` \u2014 it's a coroutine function.\nWhen FastAPI receives a request, it calls this function which returns\na coroutine object. The event loop schedules it and starts executing\nuntil the first `await` (inside async_create_job), at which point\nit suspends and can handle other requests.\n\nThe Depends() parameters create a dependency chain:\n1. get_async_db \u2192 opens DB session\n2. enforce_rate_limit \u2192 checks sliding window counter\n3. enforce_pending_limit \u2192 checks queue backpressure\n\nIf any dependency raises HTTPException, the route never executes.\nThis is the \"fail fast\" principle applied to the request lifecycle.",
                 "operationId": "create_job_jobs_post",
                 "requestBody": {
                     "required": true,
@@ -60,16 +43,6 @@
                                 }
                             }
                         }
-                    },
-                    "429": {
-                        "description": "Rate limit exceeded or too many pending jobs",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RateLimitError"
-                                }
-                            }
-                        }
                     }
                 }
             },
@@ -86,9 +59,12 @@
                         "required": false,
                         "schema": {
                             "type": "integer",
+                            "minimum": 0,
+                            "description": "Number of records to skip",
                             "default": 0,
                             "title": "Skip"
-                        }
+                        },
+                        "description": "Number of records to skip"
                     },
                     {
                         "name": "limit",
@@ -96,9 +72,13 @@
                         "required": false,
                         "schema": {
                             "type": "integer",
+                            "maximum": 100,
+                            "minimum": 1,
+                            "description": "Max records to return",
                             "default": 50,
                             "title": "Limit"
-                        }
+                        },
+                        "description": "Max records to return"
                     }
                 ],
                 "responses": {
@@ -121,16 +101,6 @@
                                 }
                             }
                         }
-                    },
-                    "429": {
-                        "description": "Rate limit exceeded",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RateLimitError"
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -141,6 +111,7 @@
                     "jobs"
                 ],
                 "summary": "Get Job",
+                "description": "Poll job status.\n\nThis endpoint will be called frequently by clients waiting for results.\nBeing async means hundreds of polling requests can be in-flight\nsimultaneously without thread exhaustion.\n\nPython Internals:\nUUID in the path parameter \u2014 FastAPI uses Pydantic to parse the\nstring from the URL into a UUID object. If it's not a valid UUID,\nFastAPI returns 422 automatically.",
                 "operationId": "get_job_jobs__job_id__get",
                 "parameters": [
                     {
@@ -165,18 +136,46 @@
                             }
                         }
                     },
-                    "404": {
-                        "description": "Job not found",
+                    "422": {
+                        "description": "Validation Error",
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "detail": {
-                                            "type": "string",
-                                            "example": "Job not found"
-                                        }
-                                    }
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/jobs/{job_id}/file": {
+            "get": {
+                "tags": [
+                    "jobs"
+                ],
+                "summary": "Get Job File",
+                "description": "Return metadata for the file attached to this job, if any.",
+                "operationId": "get_job_file_jobs__job_id__file_get",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "title": "Job Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobFileResponse"
                                 }
                             }
                         }
@@ -190,13 +189,130 @@
                                 }
                             }
                         }
+                    }
+                }
+            }
+        },
+        "/uploads": {
+            "post": {
+                "tags": [
+                    "uploads"
+                ],
+                "summary": "Upload File",
+                "description": "Upload a file for later use in a job.\n\nPython Internals Focus:\n-----------------------\nUploadFile wraps a SpooledTemporaryFile \u2014 small files stay in memory,\nlarge files spill to disk automatically. Our save_upload() still reads\nin chunks so we never call .read() without a size limit.\n\nDSA Focus:\nStream \u2192 hash \u2192 deduplicate. Memory stays O(chunk_size) not O(file_size).",
+                "operationId": "upload_file_uploads_post",
+                "requestBody": {
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Body_upload_file_uploads_post"
+                            }
+                        }
                     },
-                    "429": {
-                        "description": "Rate limit exceeded",
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Successful Response",
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/RateLimitError"
+                                    "$ref": "#/components/schemas/FileUploadResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/uploads/job": {
+            "post": {
+                "tags": [
+                    "uploads"
+                ],
+                "summary": "Create Job With Upload",
+                "description": "One-shot: upload file + create job.\n\nOnly OCR and transcription accept file uploads at this stage.",
+                "operationId": "create_job_with_upload_uploads_job_post",
+                "requestBody": {
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Body_create_job_with_upload_uploads_job_post"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/uploads/{file_id}": {
+            "get": {
+                "tags": [
+                    "uploads"
+                ],
+                "summary": "Get Upload Metadata",
+                "operationId": "get_upload_metadata_uploads__file_id__get",
+                "parameters": [
+                    {
+                        "name": "file_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "title": "File Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobFileResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
                                 }
                             }
                         }
@@ -218,16 +334,6 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/DashboardResponse"
-                                }
-                            }
-                        }
-                    },
-                    "429": {
-                        "description": "Rate limit exceeded",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RateLimitError"
                                 }
                             }
                         }
@@ -254,14 +360,31 @@
                         }
                     },
                     {
+                        "name": "skip",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Number of records to skip",
+                            "default": 0,
+                            "title": "Skip"
+                        },
+                        "description": "Number of records to skip"
+                    },
+                    {
                         "name": "limit",
                         "in": "query",
                         "required": false,
                         "schema": {
                             "type": "integer",
+                            "maximum": 500,
+                            "minimum": 1,
+                            "description": "Max records to return",
                             "default": 100,
                             "title": "Limit"
-                        }
+                        },
+                        "description": "Max records to return"
                     }
                 ],
                 "responses": {
@@ -284,16 +407,6 @@
                                 }
                             }
                         }
-                    },
-                    "429": {
-                        "description": "Rate limit exceeded",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RateLimitError"
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -307,14 +420,31 @@
                 "operationId": "recent_errors_admin_errors_get",
                 "parameters": [
                     {
+                        "name": "skip",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Number of records to skip",
+                            "default": 0,
+                            "title": "Skip"
+                        },
+                        "description": "Number of records to skip"
+                    },
+                    {
                         "name": "limit",
                         "in": "query",
                         "required": false,
                         "schema": {
                             "type": "integer",
+                            "maximum": 500,
+                            "minimum": 1,
+                            "description": "Max records to return",
                             "default": 50,
                             "title": "Limit"
-                        }
+                        },
+                        "description": "Max records to return"
                     }
                 ],
                 "responses": {
@@ -341,16 +471,6 @@
                                 }
                             }
                         }
-                    },
-                    "429": {
-                        "description": "Rate limit exceeded",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RateLimitError"
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -364,14 +484,31 @@
                 "operationId": "slowest_jobs_admin_slowest_jobs_get",
                 "parameters": [
                     {
-                        "name": "k",
+                        "name": "skip",
                         "in": "query",
                         "required": false,
                         "schema": {
                             "type": "integer",
+                            "minimum": 0,
+                            "description": "Number of records to skip",
+                            "default": 0,
+                            "title": "Skip"
+                        },
+                        "description": "Number of records to skip"
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 100,
+                            "minimum": 1,
+                            "description": "Max records to return",
                             "default": 10,
-                            "title": "K"
-                        }
+                            "title": "Limit"
+                        },
+                        "description": "Max records to return"
                     }
                 ],
                 "responses": {
@@ -398,16 +535,6 @@
                                 }
                             }
                         }
-                    },
-                    "429": {
-                        "description": "Rate limit exceeded",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RateLimitError"
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -429,14 +556,21 @@
                                 }
                             }
                         }
-                    },
-                    "429": {
-                        "description": "Rate limit exceeded",
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "summary": "Health",
+                "description": "Lightweight health check.\n\nNote: redis_client is still the sync client. For a simple LLEN command\n(microseconds), running it in an async route is acceptable. The call\ncompletes so fast that blocking is negligible.\n\nIf you needed to do heavy Redis work in an async context, you'd use:\n    from redis.asyncio import Redis as AsyncRedis\n\nBut for health checks, keep it simple.",
+                "operationId": "health_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RateLimitError"
-                                }
+                                "schema": {}
                             }
                         }
                     }
@@ -446,24 +580,166 @@
     },
     "components": {
         "schemas": {
-            "HealthResponse": {
+            "Body_create_job_with_upload_uploads_job_post": {
                 "properties": {
-                    "status": {
-                        "type": "string",
-                        "title": "Status",
-                        "example": "ok"
+                    "job_type": {
+                        "$ref": "#/components/schemas/JobType"
                     },
-                    "queued_jobs": {
-                        "type": "integer",
-                        "title": "Queued Jobs"
+                    "file": {
+                        "type": "string",
+                        "contentMediaType": "application/octet-stream",
+                        "title": "File"
+                    },
+                    "priority": {
+                        "$ref": "#/components/schemas/JobPriority",
+                        "default": "normal"
                     }
                 },
                 "type": "object",
                 "required": [
-                    "status",
-                    "queued_jobs"
+                    "job_type",
+                    "file"
                 ],
-                "title": "HealthResponse"
+                "title": "Body_create_job_with_upload_uploads_job_post"
+            },
+            "Body_upload_file_uploads_post": {
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "contentMediaType": "application/octet-stream",
+                        "title": "File"
+                    },
+                    "purpose": {
+                        "$ref": "#/components/schemas/FilePurpose"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "file",
+                    "purpose"
+                ],
+                "title": "Body_upload_file_uploads_post"
+            },
+            "DashboardResponse": {
+                "properties": {
+                    "total_jobs": {
+                        "type": "integer",
+                        "title": "Total Jobs"
+                    },
+                    "pending_jobs": {
+                        "type": "integer",
+                        "title": "Pending Jobs"
+                    },
+                    "processing_jobs": {
+                        "type": "integer",
+                        "title": "Processing Jobs"
+                    },
+                    "completed_jobs": {
+                        "type": "integer",
+                        "title": "Completed Jobs"
+                    },
+                    "failed_jobs": {
+                        "type": "integer",
+                        "title": "Failed Jobs"
+                    },
+                    "avg_processing_seconds": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Avg Processing Seconds"
+                    },
+                    "slowest_job_types": {
+                        "items": {
+                            "$ref": "#/components/schemas/JobTypeStats"
+                        },
+                        "type": "array",
+                        "title": "Slowest Job Types"
+                    },
+                    "queue_size": {
+                        "type": "integer",
+                        "title": "Queue Size"
+                    },
+                    "workers": {
+                        "$ref": "#/components/schemas/WorkerHealthResponse"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "total_jobs",
+                    "pending_jobs",
+                    "processing_jobs",
+                    "completed_jobs",
+                    "failed_jobs",
+                    "avg_processing_seconds",
+                    "slowest_job_types",
+                    "queue_size",
+                    "workers"
+                ],
+                "title": "DashboardResponse"
+            },
+            "FilePurpose": {
+                "type": "string",
+                "enum": [
+                    "ocr",
+                    "transcription"
+                ],
+                "title": "FilePurpose",
+                "description": "What the uploaded file will be used for."
+            },
+            "FileUploadResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Id"
+                    },
+                    "original_filename": {
+                        "type": "string",
+                        "title": "Original Filename"
+                    },
+                    "file_type": {
+                        "type": "string",
+                        "title": "File Type"
+                    },
+                    "file_size": {
+                        "type": "integer",
+                        "title": "File Size"
+                    },
+                    "content_hash": {
+                        "type": "string",
+                        "title": "Content Hash"
+                    },
+                    "purpose": {
+                        "$ref": "#/components/schemas/FilePurpose"
+                    },
+                    "deduplicated": {
+                        "type": "boolean",
+                        "title": "Deduplicated",
+                        "description": "True if this upload matched an existing file by hash"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "original_filename",
+                    "file_type",
+                    "file_size",
+                    "content_hash",
+                    "purpose",
+                    "deduplicated",
+                    "created_at"
+                ],
+                "title": "FileUploadResponse"
             },
             "HTTPValidationError": {
                 "properties": {
@@ -501,6 +777,63 @@
                 ],
                 "title": "JobCreate"
             },
+            "JobFileResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Id"
+                    },
+                    "job_id": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "uuid"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Job Id"
+                    },
+                    "original_filename": {
+                        "type": "string",
+                        "title": "Original Filename"
+                    },
+                    "file_type": {
+                        "type": "string",
+                        "title": "File Type"
+                    },
+                    "file_size": {
+                        "type": "integer",
+                        "title": "File Size"
+                    },
+                    "content_hash": {
+                        "type": "string",
+                        "title": "Content Hash"
+                    },
+                    "purpose": {
+                        "$ref": "#/components/schemas/FilePurpose"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "job_id",
+                    "original_filename",
+                    "file_type",
+                    "file_size",
+                    "content_hash",
+                    "purpose",
+                    "created_at"
+                ],
+                "title": "JobFileResponse"
+            },
             "JobListResponse": {
                 "properties": {
                     "jobs": {
@@ -521,6 +854,62 @@
                     "total"
                 ],
                 "title": "JobListResponse"
+            },
+            "JobLogListResponse": {
+                "properties": {
+                    "logs": {
+                        "items": {
+                            "$ref": "#/components/schemas/JobLogResponse"
+                        },
+                        "type": "array",
+                        "title": "Logs"
+                    },
+                    "total": {
+                        "type": "integer",
+                        "title": "Total"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "logs",
+                    "total"
+                ],
+                "title": "JobLogListResponse"
+            },
+            "JobLogResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Id"
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Job Id"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "level": {
+                        "$ref": "#/components/schemas/LogLevel"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "job_id",
+                    "message",
+                    "level",
+                    "created_at"
+                ],
+                "title": "JobLogResponse"
             },
             "JobPriority": {
                 "type": "string",
@@ -621,169 +1010,6 @@
                 ],
                 "title": "JobType"
             },
-            "LogLevel": {
-                "type": "string",
-                "enum": [
-                    "info",
-                    "warning",
-                    "error",
-                    "debug"
-                ],
-                "title": "LogLevel"
-            },
-            "WorkerStatus": {
-                "type": "string",
-                "enum": [
-                    "online",
-                    "busy",
-                    "offline"
-                ],
-                "title": "WorkerStatus"
-            },
-            "JobLogResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "job_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Job Id"
-                    },
-                    "message": {
-                        "type": "string",
-                        "title": "Message"
-                    },
-                    "level": {
-                        "$ref": "#/components/schemas/LogLevel"
-                    },
-                    "created_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Created At"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "job_id",
-                    "message",
-                    "level",
-                    "created_at"
-                ],
-                "title": "JobLogResponse"
-            },
-            "JobLogListResponse": {
-                "properties": {
-                    "logs": {
-                        "items": {
-                            "$ref": "#/components/schemas/JobLogResponse"
-                        },
-                        "type": "array",
-                        "title": "Logs"
-                    },
-                    "total": {
-                        "type": "integer",
-                        "title": "Total"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "logs",
-                    "total"
-                ],
-                "title": "JobLogListResponse"
-            },
-            "WorkerHeartbeatResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "worker_name": {
-                        "type": "string",
-                        "title": "Worker Name"
-                    },
-                    "worker_type": {
-                        "type": "string",
-                        "title": "Worker Type"
-                    },
-                    "status": {
-                        "$ref": "#/components/schemas/WorkerStatus"
-                    },
-                    "last_seen_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Last Seen At"
-                    },
-                    "current_job_id": {
-                        "anyOf": [
-                            {
-                                "type": "string",
-                                "format": "uuid"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Current Job Id"
-                    },
-                    "jobs_completed": {
-                        "type": "integer",
-                        "title": "Jobs Completed"
-                    },
-                    "jobs_failed": {
-                        "type": "integer",
-                        "title": "Jobs Failed"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "worker_name",
-                    "worker_type",
-                    "status",
-                    "last_seen_at",
-                    "current_job_id",
-                    "jobs_completed",
-                    "jobs_failed"
-                ],
-                "title": "WorkerHeartbeatResponse"
-            },
-            "WorkerHealthResponse": {
-                "properties": {
-                    "workers": {
-                        "items": {
-                            "$ref": "#/components/schemas/WorkerHeartbeatResponse"
-                        },
-                        "type": "array",
-                        "title": "Workers"
-                    },
-                    "total_online": {
-                        "type": "integer",
-                        "title": "Total Online"
-                    },
-                    "total_busy": {
-                        "type": "integer",
-                        "title": "Total Busy"
-                    },
-                    "total_offline": {
-                        "type": "integer",
-                        "title": "Total Offline"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "workers",
-                    "total_online",
-                    "total_busy",
-                    "total_offline"
-                ],
-                "title": "WorkerHealthResponse"
-            },
             "JobTypeStats": {
                 "properties": {
                     "job_type": {
@@ -814,67 +1040,15 @@
                 ],
                 "title": "JobTypeStats"
             },
-            "DashboardResponse": {
-                "properties": {
-                    "total_jobs": {
-                        "type": "integer",
-                        "title": "Total Jobs"
-                    },
-                    "pending_jobs": {
-                        "type": "integer",
-                        "title": "Pending Jobs"
-                    },
-                    "processing_jobs": {
-                        "type": "integer",
-                        "title": "Processing Jobs"
-                    },
-                    "completed_jobs": {
-                        "type": "integer",
-                        "title": "Completed Jobs"
-                    },
-                    "failed_jobs": {
-                        "type": "integer",
-                        "title": "Failed Jobs"
-                    },
-                    "avg_processing_seconds": {
-                        "anyOf": [
-                            {
-                                "type": "number"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Avg Processing Seconds"
-                    },
-                    "slowest_job_types": {
-                        "items": {
-                            "$ref": "#/components/schemas/JobTypeStats"
-                        },
-                        "type": "array",
-                        "title": "Slowest Job Types"
-                    },
-                    "queue_size": {
-                        "type": "integer",
-                        "title": "Queue Size"
-                    },
-                    "workers": {
-                        "$ref": "#/components/schemas/WorkerHealthResponse"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "total_jobs",
-                    "pending_jobs",
-                    "processing_jobs",
-                    "completed_jobs",
-                    "failed_jobs",
-                    "avg_processing_seconds",
-                    "slowest_job_types",
-                    "queue_size",
-                    "workers"
+            "LogLevel": {
+                "type": "string",
+                "enum": [
+                    "info",
+                    "warning",
+                    "error",
+                    "debug"
                 ],
-                "title": "DashboardResponse"
+                "title": "LogLevel"
             },
             "TopKJobResponse": {
                 "properties": {
@@ -940,48 +1114,102 @@
                 ],
                 "title": "ValidationError"
             },
-            "RateLimitError": {
+            "WorkerHealthResponse": {
                 "properties": {
-                    "detail": {
-                        "type": "object",
-                        "properties": {
-                            "error": {
-                                "type": "string",
-                                "title": "Error",
-                                "example": "Rate limit exceeded"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "title": "Limit",
-                                "example": 20
-                            },
-                            "window_seconds": {
-                                "type": "integer",
-                                "title": "Window Seconds",
-                                "example": 60
-                            },
-                            "current_count": {
-                                "type": "integer",
-                                "title": "Current Count",
-                                "example": 21
-                            },
-                            "pending_count": {
-                                "type": "integer",
-                                "title": "Pending Count",
-                                "description": "Present only for backpressure errors"
-                            }
+                    "workers": {
+                        "items": {
+                            "$ref": "#/components/schemas/WorkerHeartbeatResponse"
                         },
-                        "required": [
-                            "error"
-                        ],
-                        "title": "Detail"
+                        "type": "array",
+                        "title": "Workers"
+                    },
+                    "total_online": {
+                        "type": "integer",
+                        "title": "Total Online"
+                    },
+                    "total_busy": {
+                        "type": "integer",
+                        "title": "Total Busy"
+                    },
+                    "total_offline": {
+                        "type": "integer",
+                        "title": "Total Offline"
                     }
                 },
                 "type": "object",
                 "required": [
-                    "detail"
+                    "workers",
+                    "total_online",
+                    "total_busy",
+                    "total_offline"
                 ],
-                "title": "RateLimitError"
+                "title": "WorkerHealthResponse"
+            },
+            "WorkerHeartbeatResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Id"
+                    },
+                    "worker_name": {
+                        "type": "string",
+                        "title": "Worker Name"
+                    },
+                    "worker_type": {
+                        "type": "string",
+                        "title": "Worker Type"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/WorkerStatus"
+                    },
+                    "last_seen_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Last Seen At"
+                    },
+                    "current_job_id": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "uuid"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Current Job Id"
+                    },
+                    "jobs_completed": {
+                        "type": "integer",
+                        "title": "Jobs Completed"
+                    },
+                    "jobs_failed": {
+                        "type": "integer",
+                        "title": "Jobs Failed"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "worker_name",
+                    "worker_type",
+                    "status",
+                    "last_seen_at",
+                    "current_job_id",
+                    "jobs_completed",
+                    "jobs_failed"
+                ],
+                "title": "WorkerHeartbeatResponse"
+            },
+            "WorkerStatus": {
+                "type": "string",
+                "enum": [
+                    "online",
+                    "busy",
+                    "offline"
+                ],
+                "title": "WorkerStatus"
             }
         }
     }

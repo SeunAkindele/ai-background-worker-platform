@@ -1,11 +1,14 @@
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.job import Job, JobStatus
+from app.models.job_file import FilePurpose
 from app.schemas.job_schema import JobCreate, JobListResponse, JobResponse
+from app.services.file_service import file_service
 
 
 class JobService:
@@ -16,29 +19,32 @@ class JobService:
         """
         Create a job asynchronously.
 
-        Python Internals Focus:
-        -----------------------
-        `await db.commit()` suspends this coroutine and yields control back
-        to the event loop. While Postgres processes our INSERT, the event loop
-        can handle other incoming HTTP requests.
-
-        Compare with the sync version below: `db.commit()` blocks the entire
-        thread until Postgres responds. With 4 Uvicorn threads, only 4
-        requests can be in-flight at once. With async, hundreds can be
-        in-flight because they're all just suspended coroutines (very cheap).
-
-        A coroutine costs ~200 bytes of memory. A thread costs ~8MB of stack.
-        This is why async is perfect for I/O-bound API work.
+        Stage 9 addition:
+        If input contains file_id, resolve it to an absolute file_path
+        on disk and link the JobFile row to this job.
         """
+        input_payload = dict(payload.input)
+        file_id_raw = input_payload.get("file_id")
+
+        if file_id_raw is not None:
+            input_payload = await self._resolve_file_input(
+                db, payload.job_type.value, input_payload
+            )
+
         job = Job(
             job_type=payload.job_type,
-            input_payload=payload.input,
+            input_payload=input_payload,
             status=JobStatus.PENDING,
             priority=payload.priority,
         )
         db.add(job)
         await db.commit()
         await db.refresh(job)
+
+        if file_id_raw is not None:
+            await file_service.link_file_to_job(
+                db, UUID(str(file_id_raw)), job.id
+            )
 
         from app.workers.celery_app import celery_app
 
@@ -47,20 +53,45 @@ class JobService:
 
         return JobResponse.model_validate(job)
 
+    async def _resolve_file_input(
+        self,
+        db: AsyncSession,
+        job_type: str,
+        input_payload: dict,
+    ) -> dict:
+        file_id = UUID(str(input_payload["file_id"]))
+        job_file = await file_service.get_file(db, file_id)
+
+        if job_file is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Uploaded file {file_id} not found",
+            )
+
+        expected_purpose = {
+            "ocr": FilePurpose.OCR,
+            "transcription": FilePurpose.TRANSCRIPTION,
+        }.get(job_type)
+
+        if expected_purpose and job_file.purpose != expected_purpose:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"File purpose '{job_file.purpose.value}' does not match "
+                    f"job type '{job_type}'"
+                ),
+            )
+
+        resolved = dict(input_payload)
+        resolved["file_path"] = file_service.resolve_absolute_path(job_file)
+        resolved["original_filename"] = job_file.original_filename
+        resolved["file_type"] = job_file.file_type
+        resolved["file_size"] = job_file.file_size
+        return resolved
+
     async def async_get_job(
         self, db: AsyncSession, job_id: UUID
     ) -> JobResponse | None:
-        """
-        Python Internals Focus:
-        -----------------------
-        `select(Job).where(...)` builds a SQL expression object (lazy).
-        `await db.execute(stmt)` sends it to Postgres (suspends coroutine).
-        `.scalars().first()` extracts the ORM object from the result proxy.
-
-        This is the "new style" SQLAlchemy 2.0 query API. The old
-        `db.query(Job).filter(...)` style doesn't work with AsyncSession
-        because .query() triggers synchronous I/O internally.
-        """
         stmt = select(Job).where(Job.id == job_id)
         result = await db.execute(stmt)
         job = result.scalars().first()
@@ -84,13 +115,11 @@ class JobService:
             total=total,
         )
 
-
     def get_job(self, db: Session, job_id: UUID) -> JobResponse | None:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             return None
         return JobResponse.model_validate(job)
-
 
     def update_job_status(
         self,

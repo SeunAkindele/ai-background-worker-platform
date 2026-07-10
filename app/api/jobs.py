@@ -5,7 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_db
 from app.core.dependencies import enforce_pending_limit, enforce_rate_limit
+from app.schemas.file_schema import JobFileResponse
 from app.schemas.job_schema import JobCreate, JobListResponse, JobResponse
+from app.services.file_service import file_service
 from app.services.job_service import job_service
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -63,6 +65,22 @@ async def get_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@router.get("/{job_id}/file", response_model=JobFileResponse)
+async def get_job_file(
+    job_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    _client: str = Depends(enforce_rate_limit),
+):
+    """Return metadata for the file attached to this job, if any."""
+    job = await job_service.async_get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_file = await file_service.get_file_for_job(db, job_id)
+    if job_file is None:
+        raise HTTPException(status_code=404, detail="No file linked to this job")
+    return JobFileResponse.model_validate(job_file)
 
 
 @router.get("", response_model=JobListResponse)

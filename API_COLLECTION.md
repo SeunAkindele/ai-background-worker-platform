@@ -10,7 +10,11 @@ Base URL: `http://localhost:8000`
 |--------|------|-------------|
 | `POST` | `/jobs` | Create a job |
 | `GET` | `/jobs/{job_id}` | Get job by ID (check status/result) |
+| `GET` | `/jobs/{job_id}/file` | File metadata linked to a job |
 | `GET` | `/jobs` | List all jobs (query: `skip`, `limit`) |
+| `POST` | `/uploads` | Upload a file (`multipart`: `file`, `purpose`) |
+| `POST` | `/uploads/job` | Upload + create OCR/transcription job (one-shot) |
+| `GET` | `/uploads/{file_id}` | Upload metadata by file UUID |
 | `GET` | `/health` | Health check |
 | `GET` | `/admin/dashboard` | Full system overview (jobs, workers, queues) |
 | `GET` | `/admin/jobs/{job_id}/logs` | Audit trail / logs for a specific job |
@@ -215,7 +219,81 @@ Content-Type: application/json
 }
 ```
 
-### 3c. File Path (for local files)
+### 3c. File Upload (recommended — Stage 9)
+
+**Step 1 — Upload the file:**
+
+```
+POST /uploads
+Content-Type: multipart/form-data
+```
+
+| Field | Value |
+|-------|-------|
+| `purpose` | `ocr` |
+| `file` | your image or PDF file |
+
+```bash
+curl -X POST http://localhost:8000/uploads \
+  -F "purpose=ocr" \
+  -F "file=@/path/to/invoice.png"
+```
+
+**Response (201):**
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "original_filename": "invoice.png",
+  "file_type": "image/png",
+  "file_size": 12345,
+  "content_hash": "abc123...",
+  "purpose": "ocr",
+  "deduplicated": false,
+  "created_at": "2026-07-10T12:00:00Z"
+}
+```
+
+**Step 2 — Create OCR job with `file_id`:**
+
+```
+POST /jobs
+Content-Type: application/json
+```
+
+```json
+{
+  "job_type": "ocr",
+  "priority": "normal",
+  "input": {
+    "file_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+The API resolves `file_id` → absolute `file_path` and links the file to the job.
+
+### 3d. One-Shot Upload + Job
+
+```
+POST /uploads/job
+Content-Type: multipart/form-data
+```
+
+| Field | Value |
+|-------|-------|
+| `job_type` | `ocr` |
+| `priority` | `normal` (optional) |
+| `file` | your image or PDF file |
+
+```bash
+curl -X POST http://localhost:8000/uploads/job \
+  -F "job_type=ocr" \
+  -F "priority=normal" \
+  -F "file=@/path/to/scan.pdf"
+```
+
+### 3e. File Path (local dev only)
 
 ```
 POST /jobs
@@ -233,6 +311,8 @@ Content-Type: application/json
   }
 }
 ```
+
+> Use `file_id` from `/uploads` in production — `file_path` is for local testing when API and worker share the same filesystem.
 
 ---
 
@@ -314,6 +394,49 @@ Content-Type: application/json
     "duration": 300
   }
 }
+```
+
+### 4d. File Upload (Stage 9)
+
+**Step 1 — Upload audio/video:**
+
+```
+POST /uploads
+Content-Type: multipart/form-data
+```
+
+| Field | Value |
+|-------|-------|
+| `purpose` | `transcription` |
+| `file` | your audio or video file |
+
+```bash
+curl -X POST http://localhost:8000/uploads \
+  -F "purpose=transcription" \
+  -F "file=@/path/to/meeting.mp3"
+```
+
+**Step 2 — Create transcription job:**
+
+```json
+{
+  "job_type": "transcription",
+  "priority": "normal",
+  "input": {
+    "file_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+The worker reads the file from disk, detects duration via mutagen, and runs the chunking/merge pipeline. Transcript text is still simulated until Whisper is integrated.
+
+**One-shot:**
+
+```bash
+curl -X POST http://localhost:8000/uploads/job \
+  -F "job_type=transcription" \
+  -F "priority=normal" \
+  -F "file=@/path/to/podcast.wav"
 ```
 
 ---
@@ -437,7 +560,46 @@ Content-Type: application/json
 
 ---
 
-## 6. Check Job Status
+## 6. File Upload Endpoints (Stage 9)
+
+### Upload a file
+
+```
+POST /uploads
+Content-Type: multipart/form-data
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | file | yes | The file to upload |
+| `purpose` | string | yes | `ocr` or `transcription` |
+
+**Allowed MIME types:**
+
+| `purpose` | Types |
+|-----------|-------|
+| `ocr` | PNG, JPEG, WebP, TIFF, BMP, PDF |
+| `transcription` | MP3, WAV, OGG, FLAC, AAC, MP4, WebM, etc. |
+
+**Max size:** 50 MB (configurable via `MAX_UPLOAD_SIZE_BYTES`)
+
+**Deduplication:** Uploading the same file twice returns the existing record with `"deduplicated": true`.
+
+### Get upload metadata
+
+```
+GET /uploads/{file_id}
+```
+
+### Get file linked to a job
+
+```
+GET /jobs/{job_id}/file
+```
+
+---
+
+## 7. Check Job Status
 
 After creating any job, use the returned `id` to poll status:
 
@@ -467,7 +629,7 @@ Or on failure:
 
 ---
 
-## 7. List All Jobs
+## 8. List All Jobs
 
 ```
 GET /jobs?skip=0&limit=10
@@ -484,7 +646,7 @@ GET /jobs?skip=0&limit=10
 
 ---
 
-## 8. Health & Admin
+## 9. Health & Admin
 
 ### Health Check
 
@@ -656,10 +818,16 @@ These should all return `422 Unprocessable Entity`:
 {"job_type": "embeddings", "input": {}}
 ```
 
-**OCR — missing image/images/file_path:**
+**OCR — missing image/images/file_path/file_id:**
 ```json
 {"job_type": "ocr", "input": {}}
 ```
+
+**OCR — wrong MIME for purpose (400 on upload):**
+Upload an MP3 with `purpose=ocr` → `400 Bad Request`
+
+**Transcription — file purpose mismatch (400):**
+Use an OCR-uploaded `file_id` on a transcription job → `400 Bad Request`
 
 **Transcription — missing all input options:**
 ```json
@@ -690,7 +858,7 @@ All `POST /jobs` requests accept an optional `priority` field:
 
 ---
 
-## 9. Rate Limiting (Stage 8)
+## 10. Rate Limiting (Stage 8)
 
 All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
 
@@ -752,8 +920,9 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 ## Notes
 
 - **Summarization** and **Embeddings** workers download ML models on first use (~1.6GB and ~80MB respectively). First job will be slow.
-- **OCR** requires Tesseract installed on the system (`brew install tesseract`). Without it, returns simulated output.
-- **Transcription** is currently simulated — distributes provided `text` across time chunks. Real Whisper integration comes in Stage 9.
+- **OCR** requires Tesseract installed on the system (`brew install tesseract`). Without it, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
+- **Transcription** accepts real audio/video uploads. Duration is detected via mutagen; transcript text is still simulated until Whisper is added.
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
+- **File uploads** are stored under `uploads/` (hash-sharded). Same file uploaded twice is deduplicated by SHA-256.
 - **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
-- **Backpressure** — `POST /jobs` rejects with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).
+- **Backpressure** — `POST /jobs` and `POST /uploads/job` reject with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).

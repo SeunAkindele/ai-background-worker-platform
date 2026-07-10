@@ -2,10 +2,89 @@
 
 A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
 
-**Current branch:** `feat/stage-8`  
-**Current stage:** Stage 8 — Async FastAPI + Rate Limiting
+**Current stage:** Stage 9 — File Uploads (OCR & Transcription)
 
-## Stage 8 scope (this branch)
+## Stage 9 scope (latest)
+
+Stage 9 adds a **file upload pipeline** so OCR and transcription jobs can work with real files (images, PDFs, audio, video) instead of only JSON payloads.
+
+| Area | Status |
+|------|--------|
+| **Multipart file upload (`POST /uploads`)** | **Done** |
+| **One-shot upload + job (`POST /uploads/job`)** | **Done** |
+| **`job_files` table (metadata + SHA-256 hash)** | **Done** |
+| **Streaming upload (8 KB chunks, O(chunk_size) memory)** | **Done** |
+| **SHA-256 hashing during upload** | **Done** |
+| **Deduplication by content hash** | **Done** |
+| **MIME type validation per purpose (OCR vs transcription)** | **Done** |
+| **Max upload size (default 50 MB)** | **Done** |
+| **Jobs accept `file_id` in input → resolve to `file_path`** | **Done** |
+| **`GET /jobs/{job_id}/file` — linked file metadata** | **Done** |
+| **`GET /uploads/{file_id}` — upload metadata** | **Done** |
+| **OCR worker reads uploaded files from disk** | **Done** |
+| **Transcription worker reads file duration via mutagen** | **Done** (transcript still simulated) |
+
+### What changed from Stage 8
+
+| Stage 8 | Stage 9 |
+|---------|---------|
+| JSON-only job input | **File uploads** for OCR and transcription |
+| No file storage | **Local disk storage** under `uploads/` (hash-sharded paths) |
+| OCR: base64 / local path only | OCR: **`file_id`** from upload API |
+| Transcription: simulated text only | Transcription: **real audio/video files** + duration detection |
+| Single `jobs` table | Added **`job_files`** table linked to jobs |
+| No deduplication | **Content-hash dedup** — same bytes uploaded twice → one stored file |
+
+### File upload flow
+
+```
+Client
+  │
+  ├──► POST /uploads (multipart: file + purpose)
+  │         │
+  │         ├── stream to disk in 8 KB chunks
+  │         ├── SHA-256 hash while streaming
+  │         ├── dedup if hash already exists
+  │         └── return file_id + metadata
+  │
+  ├──► POST /jobs  {"job_type":"ocr","input":{"file_id":"..."}}
+  │         │
+  │         ├── resolve file_id → absolute file_path
+  │         ├── link job_files.job_id
+  │         └── dispatch Celery task
+  │
+  └──► POST /uploads/job (one-shot: upload + create job)
+            │
+            └── same as above, single request
+```
+
+### Allowed file types
+
+| Purpose | MIME types |
+|---------|-----------|
+| **OCR** | `image/png`, `image/jpeg`, `image/webp`, `image/tiff`, `image/bmp`, `application/pdf` |
+| **Transcription** | `audio/mpeg`, `audio/wav`, `audio/ogg`, `audio/flac`, `audio/aac`, `video/mp4`, `video/webm`, etc. |
+
+### DSA concepts in Stage 9
+
+| Concept | Where Used |
+|---------|-----------|
+| Streaming | `save_upload()` — read/write in fixed-size chunks |
+| Buffering | 8 KB `upload_chunk_size` — balances syscalls vs memory |
+| SHA-256 hashing | Incremental hash during upload — O(n) time, O(1) extra space |
+| Deduplication | Hash → DB lookup → skip storing duplicate bytes |
+| Hash-sharded directories | `uploads/ab/<hash>.ext` — avoids flat directory bloat |
+
+### Python internals in Stage 9
+
+| Concept | Where Used |
+|---------|-----------|
+| File objects + context managers | `with path.open("rb")` in chunk readers |
+| Generators | `iter_file_chunks()` — lazy byte streaming |
+| `UploadFile` (SpooledTemporaryFile) | FastAPI multipart — small files in RAM, large spill to disk |
+| Immutable bytes | Each chunk from `read()` is safe to hash without copy issues |
+
+## Stage 8 scope
 
 Stage 8 makes the API layer **non-blocking and protected**. All routes are now `async def` backed by an async SQLAlchemy engine (`asyncpg`), allowing hundreds of concurrent connections without thread exhaustion. A Redis-based sliding window rate limiter protects every endpoint, and a backpressure mechanism prevents any single client from flooding the queue.
 
@@ -20,8 +99,6 @@ Stage 8 makes the API layer **non-blocking and protected**. All routes are now `
 | **429 Too Many Requests responses** | **Done** |
 | **Async engine disposal on shutdown** | **Done** |
 | Workers remain synchronous (CPU-bound, separate processes) | Intentional |
-
-### What changed from Stage 7
 
 | Stage 7 | Stage 8 |
 |---------|---------|
@@ -133,6 +210,8 @@ This prevents:
 | 5 | Celery | Task dispatch, retry backoff, named queues, idempotency |
 | 6 | Multi-worker platform | `BaseJobHandler` ABC, all 5 AI handlers, lazy registry |
 | 7 | Observability | `job_logs`, `worker_heartbeats`, admin API, timing decorators |
+| 8 | Async FastAPI | Async routes, asyncpg, rate limiting, backpressure |
+| 9 | File uploads | Multipart uploads, `job_files`, streaming, SHA-256 dedup |
 
 ### Architecture (Stage 7)
 
@@ -355,8 +434,8 @@ The heartbeat thread uses `threading.Event` for clean shutdown and exponential b
 | Audio chunking | Sliding window over time axis (30s chunks, 2s overlap) |
 | Merge intervals | Classic O(n log n) algorithm — sort by start, single-pass merge |
 | Timestamp alignment | O(n) pass to snap boundaries together |
-| Current mode | Simulated (distributes source text across time chunks) |
-| Future (Stage 9) | Will call Whisper on real audio file uploads |
+| Current mode | Simulated transcript text; real **file upload** + duration via mutagen |
+| File uploads | `file_id` from `POST /uploads` with `purpose=transcription` |
 
 ### Recommendations pipeline
 
@@ -437,23 +516,28 @@ The Celery worker runs in its own process, picks up tasks from the Redis broker,
 ```
 app/
 ├── api/
-│   ├── jobs.py                        # Async job CRUD endpoints + rate limiting (Stage 8)
+│   ├── jobs.py                        # Async job CRUD + file metadata (Stage 9)
+│   ├── uploads.py                     # Multipart file upload endpoints (Stage 9)
 │   └── admin.py                       # Async admin endpoints + rate limiting (Stage 8)
 ├── core/
 │   ├── database.py                    # Sync + async engines, sessions, dependencies (Stage 8)
+│   ├── file_storage.py                # Streaming upload, hashing, dedup (Stage 9)
 │   ├── rate_limiter.py                # Sliding window counter rate limiter (Stage 8)
 │   ├── dependencies.py                # Rate limit + backpressure FastAPI deps (Stage 8)
 │   └── redis_client.py                # Shared Redis connection
 ├── models/
 │   ├── __init__.py                    # Imports all models for create_all
 │   ├── job.py                         # Job ORM model, enums
+│   ├── job_file.py                    # JobFile ORM model (Stage 9)
 │   ├── job_log.py                     # JobLog ORM model (Stage 7)
 │   └── worker_heartbeat.py            # WorkerHeartbeat ORM model (Stage 7)
 ├── schemas/
 │   ├── job_schema.py                  # Pydantic request/response + per-type input validation
+│   ├── file_schema.py                 # Upload response schemas (Stage 9)
 │   └── admin_schema.py                # Admin response schemas (Stage 7)
 ├── services/
-│   ├── job_service.py                 # Async API + sync worker methods + Celery dispatch (Stage 8)
+│   ├── job_service.py                 # Async API + sync worker methods + Celery dispatch
+│   ├── file_service.py                # Upload save, dedup lookup, job linking (Stage 9)
 │   ├── log_service.py                 # Async reads + sync add_log for workers (Stage 8)
 │   ├── heartbeat_service.py           # Async staleness check + sync worker heartbeats (Stage 8)
 │   └── admin_service.py               # Async dashboard aggregation (Stage 8)
@@ -470,15 +554,18 @@ app/
 │   ├── ocr_worker.py                  # OCRHandler: batch pipeline + Pillow (Stage 6)
 │   ├── transcription_worker.py        # TranscriptionHandler: merge intervals (Stage 6)
 │   └── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
-├── config.py                          # Settings + async_database_url property (Stage 8)
-└── main.py                            # Async lifespan, engine disposal (Stage 8)
+├── config.py                          # Settings + upload config (Stage 9)
+└── main.py                            # Async lifespan, routers, v0.9.0
 tests/
-├── conftest.py                        # Test client, DB reset, fakeredis queue fixture
+├── conftest.py                        # Fake Redis, mock Celery, temp upload dir
 ├── test_jobs.py
-├── test_redis_queue.py
-├── test_worker.py
-└── test_summarization.py              # chunk_text() + summarize() (model mocked)
+├── test_uploads.py                    # File upload + file_id job flow (Stage 9)
+├── test_file_storage.py               # Chunking + hashing helpers (Stage 9)
+├── test_celery_dispatch.py            # Priority queue → Celery queue names
+├── test_worker.py                     # process_job task (handler mocked)
+└── test_summarization.py              # SummarizationHandler (model mocked)
 docker-compose.yml                     # PostgreSQL + Redis
+uploads/                               # Local file storage (gitignored, Stage 9)
 ```
 
 ## Prerequisites
@@ -553,14 +640,18 @@ Tables are created automatically on startup via `init_db()`.
 | `GET` | `/health` | Liveness + number of queued Celery tasks |
 | `POST` | `/jobs` | Create a job (`job_type`, `input`, optional `priority`) |
 | `GET` | `/jobs/{job_id}` | Fetch a job by UUID |
+| `GET` | `/jobs/{job_id}/file` | File metadata linked to a job (Stage 9) |
 | `GET` | `/jobs` | List jobs (`skip`, `limit`; returns `jobs` + `total`) |
+| `POST` | `/uploads` | Upload a file (`multipart`: `file`, `purpose`) (Stage 9) |
+| `POST` | `/uploads/job` | Upload + create OCR/transcription job in one request (Stage 9) |
+| `GET` | `/uploads/{file_id}` | Upload metadata by file UUID (Stage 9) |
 | `GET` | `/admin/dashboard` | Full system overview (job counts, queue size, workers) |
 | `GET` | `/admin/jobs/{job_id}/logs` | Audit trail for a specific job (`skip`, `limit`) |
 | `GET` | `/admin/errors` | Recent error logs across all jobs (`skip`, `limit`) |
 | `GET` | `/admin/slowest-jobs` | Slowest completed jobs (`skip`, `limit`) |
 | `GET` | `/admin/workers` | Worker health and status |
 
-**Quick example:**
+**Quick example — summarization job:**
 
 ```bash
 curl -X POST http://localhost:8000/jobs \
@@ -570,6 +661,26 @@ curl -X POST http://localhost:8000/jobs \
     "input": {"text": "Artificial intelligence has transformed industries..."},
     "priority": "high"
   }'
+```
+
+**Quick example — OCR with file upload (Stage 9):**
+
+```bash
+# Step 1: upload
+curl -X POST http://localhost:8000/uploads \
+  -F "purpose=ocr" \
+  -F "file=@/path/to/invoice.png"
+
+# Step 2: create job with returned file_id
+curl -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"job_type":"ocr","input":{"file_id":"YOUR-FILE-UUID"}}'
+
+# Or one-shot:
+curl -X POST http://localhost:8000/uploads/job \
+  -F "job_type=ocr" \
+  -F "priority=normal" \
+  -F "file=@/path/to/invoice.png"
 ```
 
 Poll `GET /jobs/{job_id}` to watch status move from `pending` → `processing` → `completed`.
@@ -584,7 +695,7 @@ Tests use `.env.test`, a dedicated PostgreSQL database, and **fakeredis** (no re
 pytest
 ```
 
-Coverage includes job CRUD (create, get, list, status updates), summarization logic (with the Hugging Face pipeline mocked), and rate-limit/backpressure behaviour via the async API. Legacy tests for the removed in-memory/Redis queue workers (`test_redis_queue.py`, `test_worker.py`) may need updating for the Celery-based path.
+Coverage includes job CRUD, file uploads (Stage 9), Celery dispatch, summarization logic (HF pipeline mocked), and rate-limit/backpressure behaviour. Tests use **fakeredis** and mock Celery `send_task` — no running worker required for `pytest`.
 
 ## Environment variables
 
@@ -596,5 +707,8 @@ Coverage includes job CRUD (create, get, list, status updates), summarization lo
 | `RATE_LIMIT_REQUESTS` | Max requests per client per window | `20` |
 | `RATE_LIMIT_WINDOW_SECONDS` | Rate limit window duration | `60` |
 | `MAX_PENDING_JOBS_PER_USER` | Max total pending jobs before rejecting new submissions (global count) | `50` |
+| `UPLOAD_DIR` | Directory for uploaded files | `uploads` |
+| `MAX_UPLOAD_SIZE_BYTES` | Max file upload size in bytes | `52428800` (50 MB) |
+| `UPLOAD_CHUNK_SIZE` | Chunk size for streaming reads/writes | `8192` (8 KB) |
 
 See `.env.example` and `.env.test.example` for templates.
