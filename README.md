@@ -22,7 +22,9 @@ Stage 9 adds a **file upload pipeline** so OCR and transcription jobs can work w
 | **`GET /jobs/{job_id}/file` — linked file metadata** | **Done** |
 | **`GET /uploads/{file_id}` — upload metadata** | **Done** |
 | **OCR worker reads uploaded files from disk** | **Done** |
-| **Transcription worker reads file duration via mutagen** | **Done** (transcript still simulated) |
+| **Transcription worker reads file duration via mutagen** | **Done** |
+| **Real Whisper transcription for uploaded audio/video** | **Done** (`openai-whisper`, `base` model) |
+| **Simulated transcription path kept for text-only jobs** | **Done** (`input.text` + `duration`) |
 
 ### What changed from Stage 8
 
@@ -31,7 +33,7 @@ Stage 9 adds a **file upload pipeline** so OCR and transcription jobs can work w
 | JSON-only job input | **File uploads** for OCR and transcription |
 | No file storage | **Local disk storage** under `uploads/` (hash-sharded paths) |
 | OCR: base64 / local path only | OCR: **`file_id`** from upload API |
-| Transcription: simulated text only | Transcription: **real audio/video files** + duration detection |
+| Transcription: simulated text only | Transcription: **Whisper** on real audio/video; simulated path for text-only jobs |
 | Single `jobs` table | Added **`job_files`** table linked to jobs |
 | No deduplication | **Content-hash dedup** — same bytes uploaded twice → one stored file |
 
@@ -63,7 +65,7 @@ Client
 | Purpose | MIME types |
 |---------|-----------|
 | **OCR** | `image/png`, `image/jpeg`, `image/webp`, `image/tiff`, `image/bmp`, `application/pdf` |
-| **Transcription** | `audio/mpeg`, `audio/wav`, `audio/ogg`, `audio/flac`, `audio/aac`, `video/mp4`, `video/webm`, etc. |
+| **Transcription** | `audio/mpeg`, `audio/wav`, `audio/wave`, `audio/x-wav`, `audio/ogg`, `audio/flac`, `audio/aac`, `video/mp4`, `video/webm`, etc. |
 
 ### DSA concepts in Stage 9
 
@@ -289,7 +291,7 @@ class BaseJobHandler(ABC, Generic[InputT, ResultT]):
 | **Summarization** | `summarization_worker.py` | Sliding window chunking, recursive merge | `facebook/bart-large-cnn` (HF) |
 | **Embeddings** | `embedding_worker.py` | Vectors, cosine similarity, brute-force nearest neighbor | `all-MiniLM-L6-v2` (sentence-transformers) |
 | **OCR** | `ocr_worker.py` | Batch pipeline (decode → preprocess → OCR → post-process), generator-based memory efficiency | Pillow + pytesseract |
-| **Transcription** | `transcription_worker.py` | Merge intervals (O(n log n)), timestamp alignment, sliding window over time | Simulated (Whisper in Stage 9) |
+| **Transcription** | `transcription_worker.py` | Merge intervals (O(n log n)), timestamp alignment; Whisper for real files | OpenAI Whisper (`base`) + simulated text-only path |
 | **Recommendations** | `recommendation_worker.py` | Bipartite graph (adjacency list), Jaccard similarity, weighted scoring, Top-K via `heapq.nlargest` | Pure algorithm |
 
 ### Handler registry
@@ -431,11 +433,13 @@ The heartbeat thread uses `threading.Event` for clean shutdown and exponential b
 
 | Feature | Detail |
 |---------|--------|
-| Audio chunking | Sliding window over time axis (30s chunks, 2s overlap) |
-| Merge intervals | Classic O(n log n) algorithm — sort by start, single-pass merge |
-| Timestamp alignment | O(n) pass to snap boundaries together |
-| Current mode | Simulated transcript text; real **file upload** + duration via mutagen |
 | File uploads | `file_id` from `POST /uploads` with `purpose=transcription` |
+| Real transcription | **OpenAI Whisper** (`base` model) on uploaded audio/video |
+| Model loading | Lazy singleton — download once to `~/.cache/whisper/`, load once per Celery worker process |
+| Duration | Detected via mutagen (with size-based fallback) |
+| Post-processing | Merge overlapping segments + timestamp alignment |
+| Text-only jobs | Still supported via `input.text` + `duration` (simulated sliding-window path) |
+| System dependency | **ffmpeg** required by Whisper for audio decoding (`brew install ffmpeg`) |
 
 ### Recommendations pipeline
 
@@ -572,15 +576,25 @@ uploads/                               # Local file storage (gitignored, Stage 9
 
 - Python 3.11+
 - Docker (recommended) or local PostgreSQL + Redis
-- ~2GB free disk for AI models (downloaded once, cached in `~/.cache/huggingface`):
-  - Summarization: `facebook/bart-large-cnn` (~1.6GB)
-  - Embeddings: `all-MiniLM-L6-v2` (~80MB)
+- ~2GB free disk for AI models (downloaded once, then cached):
+  - Summarization: `facebook/bart-large-cnn` (~1.6GB, `~/.cache/huggingface`)
+  - Embeddings: `all-MiniLM-L6-v2` (~80MB, `~/.cache/huggingface`)
+  - Transcription: Whisper `base` (~139MB, `~/.cache/whisper/base.pt`)
 - Tesseract OCR binary (optional — OCR worker falls back to simulated output without it):
   ```bash
   brew install tesseract  # macOS
   ```
+- ffmpeg (required for Whisper audio/video decoding):
+  ```bash
+  brew install ffmpeg  # macOS
+  ```
 
 > **Note on `torch` (Intel macOS):** PyTorch ships no wheels newer than `2.2.x` for Intel macOS, and recent `transformers` refuses to load legacy `.bin` weights on `torch < 2.6`. Stage 4 sidesteps this by using a model with **safetensors** weights (`facebook/bart-large-cnn`) and `use_safetensors=True`, which works on `torch 2.2.x`.
+
+> **Note on `openai-whisper` / `llvmlite`:** If `pip install` tries to build `llvmlite` from source and fails (missing `cmake`), prefer binary wheels:
+> ```bash
+> pip install --only-binary=llvmlite,numba -r requirements.txt
+> ```
 
 ## Setup
 
@@ -631,7 +645,10 @@ celery -A app.workers.celery_app worker --loglevel=info
 
 Tables are created automatically on startup via `init_db()`.
 
-> **First summarization job is slow.** On the first job the worker downloads the model (~1.6GB) and loads it into memory. Subsequent jobs reuse the cached, in-memory pipeline and are much faster.
+> **First ML jobs are slow.** Summarization downloads ~1.6GB; Whisper transcription downloads ~139MB to `~/.cache/whisper/`. Models load into the Celery worker process once and stay cached in RAM for later jobs. To pre-download Whisper before submitting jobs:
+> ```bash
+> python -c "import whisper; whisper.load_model('base')"
+> ```
 
 ## API endpoints
 
@@ -683,7 +700,17 @@ curl -X POST http://localhost:8000/uploads/job \
   -F "file=@/path/to/invoice.png"
 ```
 
-Poll `GET /jobs/{job_id}` to watch status move from `pending` → `processing` → `completed`.
+**Quick example — Whisper transcription with file upload (Stage 9):**
+
+```bash
+# One-shot upload + job (requires ffmpeg + Whisper model)
+curl -X POST http://localhost:8000/uploads/job \
+  -F "job_type=transcription" \
+  -F "priority=normal" \
+  -F "file=@/path/to/meeting.mp3"
+```
+
+Poll `GET /jobs/{job_id}` to watch status move from `pending` → `processing` → `completed`. Completed file jobs include `source.engine: "whisper"` in `result_payload`.
 
 > For full request examples for all 5 worker types (including batch, edge cases, and validation errors), see [`API_COLLECTION.md`](API_COLLECTION.md).
 

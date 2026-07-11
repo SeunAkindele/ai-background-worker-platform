@@ -41,6 +41,7 @@ ALLOWED_MIME_TYPES: dict[FilePurpose, set[str]] = {
         "audio/mpeg",
         "audio/mp3",
         "audio/wav",
+        "audio/wave",
         "audio/x-wav",
         "audio/ogg",
         "audio/flac",

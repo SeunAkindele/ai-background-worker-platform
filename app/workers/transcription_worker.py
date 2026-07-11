@@ -9,6 +9,18 @@ from typing import Any, Generator
 from app.workers.base import BaseJobHandler
 
 
+_whisper_model = None
+
+
+def _get_whisper_model(model_name: str = "base"):
+    """Lazy singleton — loads once per Celery worker process."""
+    global _whisper_model
+    if _whisper_model is None:
+        import whisper
+        _whisper_model = whisper.load_model(model_name)
+    return _whisper_model
+
+
 @dataclass(frozen=True, slots=True)
 class TranscriptSegment:
     start: float
@@ -20,6 +32,7 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def __init__(self, chunk_duration: float = 30.0, overlap: float = 2.0):
         self._chunk_duration = chunk_duration
         self._overlap = overlap
+        
 
     def validate_input(self, input_payload: dict[str, Any]) -> None:
         file_path = input_payload.get("file_path")
@@ -50,12 +63,15 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             if duration > 7200:
                 raise ValueError("Maximum audio duration is 2 hours (7200 seconds)")
 
+    
     def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         file_path = input_payload.get("file_path")
 
         if file_path:
             duration = self._get_media_duration(file_path)
-            source_text = input_payload.get("text", "")
+            whisper_segments = self._transcribe_with_whisper(file_path)
+            merged_segments = self._merge_overlapping_segments(whisper_segments)
+            aligned_segments = self._align_timestamps(merged_segments)
             source_meta = {
                 "type": "file",
                 "path": file_path,
@@ -63,17 +79,26 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                 "file_type": input_payload.get("file_type"),
                 "file_size": input_payload.get("file_size"),
                 "detected_duration": duration,
+                "engine": "whisper",
             }
-        else:
-            duration = float(input_payload.get("duration", 60.0))
-            source_text = input_payload.get("text", "")
-            source_meta = {"type": "simulated"}
+            return {
+                "segments": [
+                    {"start": seg.start, "end": seg.end, "text": seg.text}
+                    for seg in aligned_segments
+                ],
+                "duration": duration,
+                "chunk_count": len(aligned_segments),
+                "segment_count": len(aligned_segments),
+                "source": source_meta,
+            }
 
+        # Keep simulated path for text-only jobs
+        duration = float(input_payload.get("duration", 60.0))
+        source_text = input_payload.get("text", "")
         chunks = list(self._generate_time_chunks(duration))
-        raw_segments = self._transcribe_chunks(chunks, source_text, file_path)
+        raw_segments = self._transcribe_chunks(chunks, source_text, None)
         merged_segments = self._merge_overlapping_segments(raw_segments)
         aligned_segments = self._align_timestamps(merged_segments)
-
         return {
             "segments": [
                 {"start": seg.start, "end": seg.end, "text": seg.text}
@@ -82,8 +107,9 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             "duration": duration,
             "chunk_count": len(chunks),
             "segment_count": len(aligned_segments),
-            "source": source_meta,
+            "source": {"type": "simulated"},
         }
+
 
     def format_result(self, raw_result: dict[str, Any]) -> dict[str, Any]:
         full_transcript = " ".join(
@@ -97,6 +123,7 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             "segment_count": raw_result["segment_count"],
             "source": raw_result.get("source"),
         }
+
 
     def _get_media_duration(self, file_path: str) -> float:
         """
@@ -117,6 +144,36 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         # Rough fallback: ~128 kbps average bitrate
         return max(1.0, size / (16 * 1024))
 
+    
+    def _transcribe_with_whisper(self, file_path: str) -> list[TranscriptSegment]:
+        model = _get_whisper_model("base")  # use "tiny" for faster CPU
+        result = model.transcribe(file_path, verbose=False)
+
+        segments: list[TranscriptSegment] = []
+        for seg in result.get("segments", []):
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            segments.append(
+                TranscriptSegment(
+                    start=float(seg["start"]),
+                    end=float(seg["end"]),
+                    text=text,
+                )
+            )
+
+        if not segments and result.get("text"):
+            segments.append(
+                TranscriptSegment(
+                    start=0.0,
+                    end=float(self._get_media_duration(file_path)),
+                    text=result["text"].strip(),
+                )
+            )
+
+        return segments
+
+
     def _generate_time_chunks(
         self, total_duration: float
     ) -> Generator[tuple[float, float], None, None]:
@@ -129,6 +186,7 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             if end >= total_duration:
                 break
             start += step
+
 
     def _transcribe_chunks(
         self,
@@ -174,6 +232,7 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
         return segments
 
+
     def _merge_overlapping_segments(
         self, segments: list[TranscriptSegment]
     ) -> list[TranscriptSegment]:
@@ -198,6 +257,7 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
         return merged
 
+
     def _align_timestamps(
         self, segments: list[TranscriptSegment]
     ) -> list[TranscriptSegment]:
@@ -216,6 +276,7 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             ))
 
         return aligned
+
 
     @staticmethod
     def _merge_texts(text_a: str, text_b: str) -> str:

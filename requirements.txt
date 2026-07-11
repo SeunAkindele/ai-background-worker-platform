@@ -27,3 +27,6 @@ pytesseract>=0.3.10
 
 # File uploads
 mutagen>=1.47.0
+
+# Transcription
+openai-whisper>=20231117

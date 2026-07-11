@@ -318,13 +318,14 @@ Content-Type: application/json
 
 ## 4. Transcription Worker
 
-### 4a. Simulated Transcription (with source text)
+### 4a. Simulated Transcription (text-only — no Whisper)
+
+Use this path when you pass `text` + `duration` without a file. For real audio/video, use **4d** (Whisper).
 
 ```
 POST /jobs
 Content-Type: application/json
 ```
-
 **Body:**
 
 ```json
@@ -396,7 +397,7 @@ Content-Type: application/json
 }
 ```
 
-### 4d. File Upload (Stage 9)
+### 4d. File Upload + Whisper (Stage 9)
 
 **Step 1 — Upload audio/video:**
 
@@ -408,7 +409,7 @@ Content-Type: multipart/form-data
 | Field | Value |
 |-------|-------|
 | `purpose` | `transcription` |
-| `file` | your audio or video file |
+| `file` | your audio or video file (binary — not a path string) |
 
 ```bash
 curl -X POST http://localhost:8000/uploads \
@@ -428,7 +429,31 @@ curl -X POST http://localhost:8000/uploads \
 }
 ```
 
-The worker reads the file from disk, detects duration via mutagen, and runs the chunking/merge pipeline. Transcript text is still simulated until Whisper is integrated.
+The worker reads the file from disk, detects duration via mutagen, and runs **OpenAI Whisper** (`base` model). Segments are merged and timestamps aligned. Requires **ffmpeg** on the host.
+
+**Expected result (shape):**
+
+```json
+{
+  "transcript": "Welcome everyone to today's meeting...",
+  "segments": [
+    {"start": 0.0, "end": 4.2, "text": "Welcome everyone to today's meeting"},
+    {"start": 4.2, "end": 9.8, "text": "We'll start with the quarterly update"}
+  ],
+  "duration": 62.5,
+  "chunk_count": 2,
+  "segment_count": 2,
+  "source": {
+    "type": "file",
+    "path": "...",
+    "original_filename": "meeting.mp3",
+    "file_type": "audio/mpeg",
+    "file_size": 1234567,
+    "detected_duration": 62.5,
+    "engine": "whisper"
+  }
+}
+```
 
 **One-shot:**
 
@@ -439,6 +464,7 @@ curl -X POST http://localhost:8000/uploads/job \
   -F "file=@/path/to/podcast.wav"
 ```
 
+> First Whisper job downloads `base.pt` (~139MB) to `~/.cache/whisper/`. Later jobs on the same worker reuse the in-memory model.
 ---
 
 ## 5. Recommendations Worker
@@ -571,7 +597,7 @@ Content-Type: multipart/form-data
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `file` | file | yes | The file to upload |
+| `file` | binary file | yes | The file to upload (multipart binary — not a path string) |
 | `purpose` | string | yes | `ocr` or `transcription` |
 
 **Allowed MIME types:**
@@ -579,7 +605,7 @@ Content-Type: multipart/form-data
 | `purpose` | Types |
 |-----------|-------|
 | `ocr` | PNG, JPEG, WebP, TIFF, BMP, PDF |
-| `transcription` | MP3, WAV, OGG, FLAC, AAC, MP4, WebM, etc. |
+| `transcription` | MP3, WAV (`audio/wav`, `audio/wave`, `audio/x-wav`), OGG, FLAC, AAC, MP4, WebM, etc. |
 
 **Max size:** 50 MB (configurable via `MAX_UPLOAD_SIZE_BYTES`)
 
@@ -921,8 +947,9 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 - **Summarization** and **Embeddings** workers download ML models on first use (~1.6GB and ~80MB respectively). First job will be slow.
 - **OCR** requires Tesseract installed on the system (`brew install tesseract`). Without it, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
-- **Transcription** accepts real audio/video uploads. Duration is detected via mutagen; transcript text is still simulated until Whisper is added.
+- **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (`brew install ffmpeg`) and `openai-whisper` from `requirements.txt`. Model caches at `~/.cache/whisper/base.pt` (~139MB). Duration via mutagen; result includes `source.engine: "whisper"`.
+- **Transcription (text-only)** with `input.text` + `duration` still uses the simulated sliding-window path (no Whisper).
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
-- **File uploads** are stored under `uploads/` (hash-sharded). Same file uploaded twice is deduplicated by SHA-256.
+- **File uploads** are stored under `uploads/` (hash-sharded). Same file uploaded twice is deduplicated by SHA-256. Upload fields are **binary multipart**, not filesystem path strings.
 - **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
 - **Backpressure** — `POST /jobs` and `POST /uploads/job` reject with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).
