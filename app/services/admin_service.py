@@ -2,7 +2,7 @@ import heapq
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
+
 
 from app.core.redis_client import redis_client
 from app.models.job import Job, JobStatus
