@@ -2,6 +2,8 @@
 
 Base URL: `http://localhost:8000`
 
+> **Stage 10 (Docker):** With `docker compose up`, the API is published on host port `8000` — the same base URL works. No new HTTP endpoints were added in Stage 10; this guide is unchanged for request/response shapes.
+
 ---
 
 ## Endpoints

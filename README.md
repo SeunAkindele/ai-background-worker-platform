@@ -2,9 +2,62 @@
 
 A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
 
-**Current stage:** Stage 9 — File Uploads (OCR & Transcription)
+**Current stage:** Stage 10 — Dockerize the Platform
 
-## Stage 9 scope (latest)
+## Stage 10 scope (latest)
+
+Stage 10 packages the **whole platform** into Docker Compose: API, Celery worker, PostgreSQL, and Redis start with one command. Same image for API and worker (different `command`); shared volume for uploads.
+
+| Area | Status |
+|------|--------|
+| **Multi-stage `Dockerfile` (builder + runtime)** | **Done** |
+| **CPU PyTorch install (avoid huge CUDA wheels)** | **Done** |
+| **`.dockerignore` for lean build context** | **Done** |
+| **Compose services: `api` + `worker` (+ postgres/redis)** | **Done** |
+| **Health-gated `depends_on`** | **Done** |
+| **Shared `upload_data` volume (API write / worker read)** | **Done** |
+| **Service DNS (`postgres`, `redis`) instead of localhost inside containers** | **Done** |
+| **Separate worker images / gunicorn / K8s** | Stage 11–12 |
+
+### What changed from Stage 9
+
+| Stage 9 | Stage 10 |
+|---------|----------|
+| Compose only ran Postgres + Redis | Compose also runs **api** and **worker** |
+| Local `uvicorn` + local `celery` required | **`docker compose up`** starts everything |
+| Host OS needed tesseract/ffmpeg for workers | Runtime image installs **tesseract** + **ffmpeg** |
+| `torch` from default PyPI (CUDA-heavy) | **CPU torch** from `download.pytorch.org/whl/cpu` |
+| Uploads only on host `uploads/` | Shared Docker volume **`upload_data:/app/uploads`** |
+
+### Architecture (Stage 10)
+
+```
+docker compose up
+  │
+  ├── postgres          (healthy → others start)
+  ├── redis             (healthy → others start)
+  ├── api               uvicorn on 0.0.0.0:8000
+  │      DATABASE_URL → postgres:5432
+  │      REDIS_URL    → redis:6379
+  │      UPLOAD_DIR   → /app/uploads  ──┐
+  │                                     │ shared volume
+  └── worker            celery solo     │
+         same image, different command  │
+         queues: high,normal,low        │
+         UPLOAD_DIR → /app/uploads  ←───┘
+```
+
+### System design / Python focus (Stage 10)
+
+| Concept | Where |
+|---------|--------|
+| Service boundaries | API vs worker vs infra in Compose |
+| Container networking | Hostnames `postgres` / `redis` |
+| Multi-stage builds | Builder compiles deps; runtime stays lean |
+| Layer caching | `COPY requirements.txt` before `COPY . .` |
+| Module paths | `WORKDIR /app` → imports like `app.main` |
+
+## Stage 9 scope
 
 Stage 9 adds a **file upload pipeline** so OCR and transcription jobs can work with real files (images, PDFs, audio, video) instead of only JSON payloads.
 
@@ -214,6 +267,7 @@ This prevents:
 | 7 | Observability | `job_logs`, `worker_heartbeats`, admin API, timing decorators |
 | 8 | Async FastAPI | Async routes, asyncpg, rate limiting, backpressure |
 | 9 | File uploads | Multipart uploads, `job_files`, streaming, SHA-256 dedup |
+| 10 | Dockerize | Multi-stage image, Compose api/worker, CPU torch, shared uploads |
 
 ### Architecture (Stage 7)
 
@@ -559,7 +613,7 @@ app/
 │   ├── transcription_worker.py        # TranscriptionHandler: merge intervals (Stage 6)
 │   └── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
 ├── config.py                          # Settings + upload config (Stage 9)
-└── main.py                            # Async lifespan, routers, v0.9.0
+└── main.py                            # Async lifespan, routers, v0.10.0
 tests/
 ├── conftest.py                        # Fake Redis, mock Celery, temp upload dir
 ├── test_jobs.py
@@ -568,64 +622,84 @@ tests/
 ├── test_celery_dispatch.py            # Priority queue → Celery queue names
 ├── test_worker.py                     # process_job task (handler mocked)
 └── test_summarization.py              # SummarizationHandler (model mocked)
-docker-compose.yml                     # PostgreSQL + Redis
-uploads/                               # Local file storage (gitignored, Stage 9)
+Dockerfile                             # Multi-stage API/worker image (Stage 10)
+.dockerignore                          # Excludes .venv, uploads, etc. from build context
+docker-compose.yml                     # PostgreSQL + Redis + api + worker (Stage 10)
+uploads/                               # Local file storage (gitignored; volume in Docker)
 ```
 
 ## Prerequisites
 
-- Python 3.11+
-- Docker (recommended) or local PostgreSQL + Redis
-- ~2GB free disk for AI models (downloaded once, then cached):
-  - Summarization: `facebook/bart-large-cnn` (~1.6GB, `~/.cache/huggingface`)
-  - Embeddings: `all-MiniLM-L6-v2` (~80MB, `~/.cache/huggingface`)
-  - Transcription: Whisper `base` (~139MB, `~/.cache/whisper/base.pt`)
-- Tesseract OCR binary (optional — OCR worker falls back to simulated output without it):
-  ```bash
-  brew install tesseract  # macOS
-  ```
-- ffmpeg (required for Whisper audio/video decoding):
-  ```bash
-  brew install ffmpeg  # macOS
-  ```
+- Docker Desktop (or Docker Engine + Compose)
+- For **local (non-Docker) runs** only: Python 3.11+, Tesseract, ffmpeg, and pip deps
+- ~2GB+ free disk for Docker images and AI models (downloaded once, then cached):
+  - Summarization: `facebook/bart-large-cnn` (~1.6GB)
+  - Embeddings: `all-MiniLM-L6-v2` (~80MB)
+  - Transcription: Whisper `base` (~139MB)
+- Inside Docker, **tesseract** and **ffmpeg** are installed in the runtime image — no Homebrew required for Compose runs
 
-> **Note on `torch` (Intel macOS):** PyTorch ships no wheels newer than `2.2.x` for Intel macOS, and recent `transformers` refuses to load legacy `.bin` weights on `torch < 2.6`. Stage 4 sidesteps this by using a model with **safetensors** weights (`facebook/bart-large-cnn`) and `use_safetensors=True`, which works on `torch 2.2.x`.
+> **Note on `torch`:** Stage 10 installs **CPU torch** in the Dockerfile (`--index-url https://download.pytorch.org/whl/cpu`). `torch` is commented out in `requirements.txt` so pip does not pull multi‑GB CUDA wheels. Local venv installs should install CPU torch the same way if needed.
 
-> **Note on `openai-whisper` / `llvmlite`:** If `pip install` tries to build `llvmlite` from source and fails (missing `cmake`), prefer binary wheels:
+> **Note on `openai-whisper` / `llvmlite` (local installs):** If `pip install` tries to build `llvmlite` from source and fails (missing `cmake`), prefer binary wheels:
 > ```bash
 > pip install --only-binary=llvmlite,numba -r requirements.txt
 > ```
 
 ## Setup
 
+### Option A — Full Docker (Stage 10, recommended)
+
 ```bash
-# Clone and enter the repo
 cd ai-background-worker-platform
 
-# Create a virtual environment (recommended)
+# Build images and start postgres, redis, api, worker
+docker compose up --build
+
+# Detached:
+# docker compose up -d --build
+```
+
+Compose injects `DATABASE_URL` / `REDIS_URL` / `UPLOAD_DIR` for containers. Host `.env` is for local runs outside Docker.
+
+- API: `http://localhost:8000`
+- Health: `GET http://localhost:8000/health`
+- Docs: `http://localhost:8000/docs`
+
+Stop with `docker compose down` (add `-v` to wipe volumes).
+
+### Option B — Local API/worker + Docker infra only
+
+```bash
+cd ai-background-worker-platform
+
 python -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
+# CPU torch first (same as Dockerfile), then the rest
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
-# Start PostgreSQL and Redis
-docker compose up -d
+# Infra only (comment out or leave api/worker unused — or use docker compose up postgres redis)
+docker compose up -d postgres redis
 
-# App environment
 cp .env.example .env
-# Defaults work with docker-compose:
-#   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ai_worker_platform
-#   REDIS_URL=redis://localhost:6379/0
+# DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ai_worker_platform
+# REDIS_URL=redis://localhost:6379/0
 
-# Test database (separate from app DB)
 cp .env.test.example .env.test
-createdb ai_worker_platform_test
+createdb ai_worker_platform_test   # for pytest
 ```
 
 ## Running the platform
 
-The platform requires **two processes**: the API and the Celery worker.
+### Docker (one command)
+
+```bash
+docker compose up
+# or: docker compose up --build   # after Dockerfile / requirements changes
+```
+
+### Local processes (two terminals)
 
 **Terminal 1 — API:**
 
@@ -636,7 +710,7 @@ uvicorn app.main:app --reload
 **Terminal 2 — Celery worker:**
 
 ```bash
-celery -A app.workers.celery_app worker --loglevel=info
+celery -A app.workers.celery_app worker --loglevel=info --pool=solo --queues=high,normal,low
 ```
 
 - Health: `GET http://localhost:8000/health`
@@ -645,11 +719,7 @@ celery -A app.workers.celery_app worker --loglevel=info
 
 Tables are created automatically on startup via `init_db()`.
 
-> **First ML jobs are slow.** Summarization downloads ~1.6GB; Whisper transcription downloads ~139MB to `~/.cache/whisper/`. Models load into the Celery worker process once and stay cached in RAM for later jobs. To pre-download Whisper before submitting jobs:
-> ```bash
-> python -c "import whisper; whisper.load_model('base')"
-> ```
-
+> **First ML jobs are slow.** Summarization downloads ~1.6GB; Whisper transcription downloads ~139MB. In Docker these caches live inside the worker container unless you mount a cache volume. Models load once per worker process and stay in RAM for later jobs.
 ## API endpoints
 
 | Method | Path | Description |
@@ -734,7 +804,7 @@ Coverage includes job CRUD, file uploads (Stage 9), Celery dispatch, summarizati
 | `RATE_LIMIT_REQUESTS` | Max requests per client per window | `20` |
 | `RATE_LIMIT_WINDOW_SECONDS` | Rate limit window duration | `60` |
 | `MAX_PENDING_JOBS_PER_USER` | Max total pending jobs before rejecting new submissions (global count) | `50` |
-| `UPLOAD_DIR` | Directory for uploaded files | `uploads` |
+| `UPLOAD_DIR` | Directory for uploaded files | `uploads` (Compose sets `/app/uploads`) |
 | `MAX_UPLOAD_SIZE_BYTES` | Max file upload size in bytes | `52428800` (50 MB) |
 | `UPLOAD_CHUNK_SIZE` | Chunk size for streaming reads/writes | `8192` (8 KB) |
 

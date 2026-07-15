@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Background Worker Platform",
-    version="0.9.0",
+    version="0.10.0",
     lifespan=lifespan,
 )
 
