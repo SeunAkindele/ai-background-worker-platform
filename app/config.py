@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     redis_url: str
     app_env: str = "development"
 
+    # Worker identity — set per container in docker-compose.yml.
+    # Defaults to "all" for local dev where one worker handles everything.
+    worker_type: str = "all"
+
     # Rate limiting
     rate_limit_requests: int = 20
     rate_limit_window_seconds: int = 60

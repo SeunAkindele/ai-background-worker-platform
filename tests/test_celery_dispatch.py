@@ -1,20 +1,19 @@
 """
-Celery dispatch tests — replaces the old RedisJobQueue priority tests.
-
-Priority is now expressed as Celery queue names: high / normal / low.
+Celery dispatch tests — Stage 11 job-type queues + native priority.
 """
 
 
-def test_normal_priority_uses_normal_queue(client, celery_calls):
+def test_default_routes_to_job_type_queue(client, celery_calls):
     response = client.post(
         "/jobs",
         json={"job_type": "summarization", "input": {"text": "hello"}},
     )
     assert response.status_code == 201
-    assert celery_calls[-1]["queue"] == "normal"
+    assert celery_calls[-1]["queue"] == "summarization"
+    assert celery_calls[-1].get("priority", 5) == 5
 
 
-def test_high_priority_uses_high_queue(client, celery_calls):
+def test_high_priority_still_uses_job_type_queue(client, celery_calls):
     response = client.post(
         "/jobs",
         json={
@@ -24,20 +23,22 @@ def test_high_priority_uses_high_queue(client, celery_calls):
         },
     )
     assert response.status_code == 201
-    assert celery_calls[-1]["queue"] == "high"
+    assert celery_calls[-1]["queue"] == "summarization"
+    assert celery_calls[-1]["priority"] == 0
 
 
-def test_low_priority_uses_low_queue(client, celery_calls):
+def test_low_priority_embeddings_queue(client, celery_calls):
     response = client.post(
         "/jobs",
         json={
-            "job_type": "summarization",
+            "job_type": "embeddings",
             "input": {"text": "later"},
             "priority": "low",
         },
     )
     assert response.status_code == 201
-    assert celery_calls[-1]["queue"] == "low"
+    assert celery_calls[-1]["queue"] == "embeddings"
+    assert celery_calls[-1]["priority"] == 9
 
 
 def test_send_task_receives_job_id(client, celery_calls):

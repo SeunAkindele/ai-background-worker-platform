@@ -49,6 +49,7 @@ def celery_calls(monkeypatch):
                 "args": args or [],
                 "kwargs": kwargs or {},
                 "queue": queue,
+                **({"priority": extra["priority"]} if "priority" in extra else {}),
             }
         )
         return None

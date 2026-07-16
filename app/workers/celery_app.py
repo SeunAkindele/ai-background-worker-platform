@@ -2,6 +2,9 @@ from celery import Celery
 from kombu import Queue
 
 from app.config import settings
+from app.models.job import JobType
+
+WORKER_QUEUES = [jt.value for jt in JobType]
 
 celery_app = Celery(
     "ai_worker",
@@ -25,19 +28,31 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,   # don't hoard messages; one at a time
     task_track_started=True,        # expose a STARTED state
 
-    # --- visibility timeout (DSA focus) ---
-    broker_transport_options={"visibility_timeout": 3600},  # 1h; > your slowest job
+    # --- broker transport (Redis-specific) ---
+    # priority_steps: creates sub-queues per priority level.
+    # With [0, 5, 9] and sep=":", a queue named "summarization" actually
+    # becomes three Redis lists: summarization:0, summarization:5, summarization:9.
+    # The worker drains lower numbers first (0 = highest priority).
+    #
+    # queue_order_strategy="priority": tells the worker to check higher-priority
+    # sub-queues before lower ones on each broker poll cycle.
+    #
+    # DSA Focus:
+    # In Stage 5 you used SEPARATE queues (high, normal, low) for priority.
+    # That's explicit but creates 3× as many queues when you multiply by
+    # worker types (5 types × 3 priorities = 15 queues).
+    # Celery's native priority is cleaner: one logical queue, priority handled
+    # internally.
+    broker_transport_options={
+        "visibility_timeout": 3600,
+        "priority_steps": [0, 5, 9],
+        "sep": ":",
+        "queue_order_strategy": "priority",
+    },
 
-    # Priority queues — workers drain "high" before "normal" before "low"
-    task_queues=(
-        Queue("high", routing_key="high"),
-        Queue("normal", routing_key="normal"),
-        Queue("low", routing_key="low"),
-    ),
-    task_default_queue="normal",
-    task_default_routing_key="normal",
-    # Workers consume in this order (leftmost first when messages are available)
-    worker_consumer_prefetch=True,
+    # One logical queue per job type.
+    task_queues=tuple(Queue(name) for name in WORKER_QUEUES),
+    task_default_queue="summarization",
 )
 
 # Register worker lifecycle hooks (periodic heartbeat thread).

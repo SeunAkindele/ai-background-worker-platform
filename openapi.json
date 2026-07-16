@@ -2,7 +2,7 @@
     "openapi": "3.1.0",
     "info": {
         "title": "AI Background Worker Platform",
-        "version": "0.10.0"
+        "version": "0.11.0"
     },
     "paths": {
         "/jobs": {
@@ -563,7 +563,7 @@
         "/health": {
             "get": {
                 "summary": "Health",
-                "description": "Lightweight health check.\n\nNote: redis_client is still the sync client. For a simple LLEN command\n(microseconds), running it in an async route is acceptable. The call\ncompletes so fast that blocking is negligible.\n\nIf you needed to do heavy Redis work in an async context, you'd use:\n    from redis.asyncio import Redis as AsyncRedis\n\nBut for health checks, keep it simple.",
+                "description": "Health check showing per-queue job counts.\nStage 11 change:\nWith split workers, the old redis_client.llen(\"celery\") returns 0\nbecause there's no longer a single \"celery\" queue. Each job type\nhas its own queue. This endpoint now shows the size of each queue\nso you can see which worker types have backlogs.\nDSA Focus:\nThis is essentially a hash map of queue_name \u2192 size. Iterating\nover all queue names is O(k) where k = number of job types (5).\nEach llen call is O(1) in Redis (Redis stores list length as metadata).\nNote: redis_client is the sync client. For a handful of llen calls\n(each taking microseconds), blocking an async route is acceptable.",
                 "operationId": "health_health_get",
                 "responses": {
                     "200": {
@@ -587,10 +587,8 @@
                     },
                     "file": {
                         "type": "string",
-                        "format": "binary",
                         "contentMediaType": "application/octet-stream",
-                        "title": "File",
-                        "description": "The file to upload (binary). Not a path string."
+                        "title": "File"
                     },
                     "priority": {
                         "$ref": "#/components/schemas/JobPriority",
@@ -608,10 +606,8 @@
                 "properties": {
                     "file": {
                         "type": "string",
-                        "format": "binary",
                         "contentMediaType": "application/octet-stream",
-                        "title": "File",
-                        "description": "The file to upload (binary). Not a path string."
+                        "title": "File"
                     },
                     "purpose": {
                         "$ref": "#/components/schemas/FilePurpose"
@@ -1185,36 +1181,4 @@
                         "title": "Current Job Id"
                     },
                     "jobs_completed": {
-                        "type": "integer",
-                        "title": "Jobs Completed"
-                    },
-                    "jobs_failed": {
-                        "type": "integer",
-                        "title": "Jobs Failed"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "worker_name",
-                    "worker_type",
-                    "status",
-                    "last_seen_at",
-                    "current_job_id",
-                    "jobs_completed",
-                    "jobs_failed"
-                ],
-                "title": "WorkerHeartbeatResponse"
-            },
-            "WorkerStatus": {
-                "type": "string",
-                "enum": [
-                    "online",
-                    "busy",
-                    "offline"
-                ],
-                "title": "WorkerStatus"
-            }
-        }
-    }
-}
+         

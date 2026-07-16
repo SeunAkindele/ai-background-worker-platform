@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Background Worker Platform",
-    version="0.10.0",
+    version="0.11.0",
     lifespan=lifespan,
 )
 
@@ -43,20 +43,28 @@ app.include_router(admin_router)
 @app.get("/health")
 async def health():
     """
-    Lightweight health check.
-
-    Note: redis_client is still the sync client. For a simple LLEN command
-    (microseconds), running it in an async route is acceptable. The call
-    completes so fast that blocking is negligible.
-
-    If you needed to do heavy Redis work in an async context, you'd use:
-        from redis.asyncio import Redis as AsyncRedis
-
-    But for health checks, keep it simple.
+    Health check showing per-queue job counts.
+    Stage 11 change:
+    With split workers, the old redis_client.llen("celery") returns 0
+    because there's no longer a single "celery" queue. Each job type
+    has its own queue. This endpoint now shows the size of each queue
+    so you can see which worker types have backlogs.
+    DSA Focus:
+    This is essentially a hash map of queue_name → size. Iterating
+    over all queue names is O(k) where k = number of job types (5).
+    Each llen call is O(1) in Redis (Redis stores list length as metadata).
+    Note: redis_client is the sync client. For a handful of llen calls
+    (each taking microseconds), blocking an async route is acceptable.
     """
     from app.core.redis_client import redis_client
+    from app.models.job import JobType
+    
+    queue_sizes = {}
+    for jt in JobType:
+        queue_sizes[jt.value] = redis_client.llen(jt.value)
 
     return {
         "status": "ok",
-        "queued_jobs": redis_client.llen("celery"),
+        "queues": queue_sizes,
+        "total_queued": sum(queue_sizes.values()),
     }

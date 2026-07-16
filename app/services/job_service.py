@@ -5,10 +5,25 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.job import Job, JobStatus
+from app.models.job import Job, JobPriority, JobStatus
 from app.models.job_file import FilePurpose
 from app.schemas.job_schema import JobCreate, JobListResponse, JobResponse
 from app.services.file_service import file_service
+
+
+# Maps our three-level priority to Celery's integer priority.
+# Lower number = higher priority (processed first).
+# These values match the priority_steps in celery_app.py: [0, 5, 9].
+#
+# DSA Focus:
+# This is a hash map lookup O(1) — constant time regardless of how many
+# priority levels you add later. The alternative (if/elif chain) is also
+# O(1) for a fixed set but less maintainable.
+PRIORITY_TO_CELERY = {
+    JobPriority.HIGH: 0,
+    JobPriority.NORMAL: 5,
+    JobPriority.LOW: 9,
+}
 
 
 class JobService:
@@ -48,8 +63,14 @@ class JobService:
 
         from app.workers.celery_app import celery_app
 
-        queue_name = job.priority.value
-        celery_app.send_task("process_job", args=[str(job.id)], queue=queue_name)
+        queue_name = job.job_type.value
+        task_priority = PRIORITY_TO_CELERY.get(job.priority, 5)
+        celery_app.send_task(
+            "process_job", 
+            args=[str(job.id)], 
+            queue=queue_name, 
+            priority=task_priority
+        )
 
         return JobResponse.model_validate(job)
 

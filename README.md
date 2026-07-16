@@ -2,9 +2,67 @@
 
 A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
 
-**Current stage:** Stage 10 — Dockerize the Platform
+**Current stage:** Stage 11 — Split Workers Into Independent Deployments
 
-## Stage 10 scope (latest)
+## Stage 11 scope (latest)
+
+Stage 11 splits the single Celery worker into **five Compose services** (one per job type). They still share **one Docker image** (low disk) and differ only by `command:` / `WORKER_TYPE` / `--queues=...`. Jobs are routed to a queue named after `job_type`; priority uses Celery’s native Redis priority integers.
+
+| Area | Status |
+|------|--------|
+| **One shared image, multiple worker services** | **Done** |
+| **Per-type queues** (`summarization`, `embeddings`, `ocr`, `transcription`, `recommendations`) | **Done** |
+| **Dispatch: `queue=job_type`, `priority=0|5|9`** | **Done** |
+| **`WORKER_TYPE` env + heartbeat identity** | **Done** |
+| **YAML anchors** (`x-worker-common`, `x-worker-env`) | **Done** |
+| **`GET /health` returns per-queue sizes** | **Done** |
+| **Separate slim Dockerfiles / Kubernetes** | Stage 12 |
+
+### What changed from Stage 10
+
+| Stage 10 | Stage 11 |
+|----------|----------|
+| One `worker` service on `high,normal,low` | Five workers: `worker-summarization`, … each on its own queue |
+| Queue name = priority (`high` / `normal` / `low`) | Queue name = **job type**; priority = Celery integer |
+| Heartbeat `worker_type` often `"general"` until first job | Registered at startup from `WORKER_TYPE` |
+| Health: single queue count | Health: **`queues` map + `total_queued`** |
+| Scale all job types together | Scale one type independently (e.g. more OCR replicas later) |
+
+### Architecture (Stage 11)
+
+```
+docker compose up
+  │
+  ├── postgres / redis          (healthy → others start)
+  ├── api                       uvicorn :8000
+  │      send_task(..., queue=job_type, priority=0|5|9)
+  │      UPLOAD_DIR → /app/uploads  ──┐
+  │                                   │ shared volume
+  ├── worker-summarization      --queues=summarization
+  ├── worker-embeddings         --queues=embeddings
+  ├── worker-ocr                --queues=ocr
+  ├── worker-transcription      --queues=transcription
+  └── worker-recommendations    --queues=recommendations
+         same image, different command / WORKER_TYPE
+         UPLOAD_DIR → /app/uploads  ←───┘
+```
+
+### System design / DSA / Python focus (Stage 11)
+
+| Concept | Where |
+|---------|--------|
+| Service boundaries + independent scale | One Compose service per job type |
+| Queue routing | `job_type` → Redis queue name |
+| Fair scheduling via isolation | OCR backlog does not block summarization |
+| Process isolation | Each container: own Python, `sys.modules`, model memory |
+| Env-driven config | `WORKER_TYPE` → settings + heartbeat |
+| Native priority | `priority_steps: [0, 5, 9]` inside each type queue |
+
+### Low-disk note
+
+Do **not** build five torch-heavy images. Keep **one** `Dockerfile` / image; run many services with different `command:`. Slim per-worker images come later only if you split dependencies.
+
+## Stage 10 scope
 
 Stage 10 packages the **whole platform** into Docker Compose: API, Celery worker, PostgreSQL, and Redis start with one command. Same image for API and worker (different `command`); shared volume for uploads.
 
@@ -13,11 +71,10 @@ Stage 10 packages the **whole platform** into Docker Compose: API, Celery worker
 | **Multi-stage `Dockerfile` (builder + runtime)** | **Done** |
 | **CPU PyTorch install (avoid huge CUDA wheels)** | **Done** |
 | **`.dockerignore` for lean build context** | **Done** |
-| **Compose services: `api` + `worker` (+ postgres/redis)** | **Done** |
+| **Compose services: `api` + `worker` (+ postgres/redis)** | **Done** (Stage 11 splits `worker`) |
 | **Health-gated `depends_on`** | **Done** |
 | **Shared `upload_data` volume (API write / worker read)** | **Done** |
 | **Service DNS (`postgres`, `redis`) instead of localhost inside containers** | **Done** |
-| **Separate worker images / gunicorn / K8s** | Stage 11–12 |
 
 ### What changed from Stage 9
 
@@ -187,13 +244,13 @@ FastAPI (async)  ──►  PostgreSQL (via asyncpg — non-blocking)
   ├──►  /admin/dashboard      → rate limit → async aggregation
   ├──►  /admin/workers        → rate limit → async staleness check + fetch
   │
-  └──►  celery_app.send_task("process_job", [job_id], queue=priority)
+  └──►  celery_app.send_task("process_job", [job_id], queue=job_type, priority=...)
             │                              ↑ still sync (< 1ms Redis LPUSH)
             ▼
        Redis (Celery broker)    Redis (rate limit keys: rate:{client}:{window})
             │
             ▼
-       Celery worker (SYNC — separate process, CPU-bound AI work)
+       Celery workers (SYNC — separate processes; Stage 11: one per job type)
             ├── uses psycopg2 (sync driver)
             ├── uses db_session() (sync context manager)
             └── unchanged from Stage 7
@@ -268,6 +325,7 @@ This prevents:
 | 8 | Async FastAPI | Async routes, asyncpg, rate limiting, backpressure |
 | 9 | File uploads | Multipart uploads, `job_files`, streaming, SHA-256 dedup |
 | 10 | Dockerize | Multi-stage image, Compose api/worker, CPU torch, shared uploads |
+| 11 | Split workers | Per-type Compose services, job-type queues, native priority |
 
 ### Architecture (Stage 7)
 
@@ -286,13 +344,13 @@ FastAPI  ──►  PostgreSQL
   ├──►  /admin/slowest-jobs     → Top-K slowest jobs (heapq)
   ├──►  /admin/workers          → worker health (online/busy/offline)
   │
-  └──►  celery_app.send_task("process_job", [job_id], queue=priority)
+  └──►  celery_app.send_task("process_job", [job_id], queue=job_type, priority=0|5|9)
             │
             ▼
-       Redis (Celery broker — named queues: high, normal, low)
+       Redis (Celery broker — one queue per job type + native priority)
             │
             ▼
-       Celery worker  (celery -A app.workers.celery_app worker)
+       Celery workers (one process/container per job type in Stage 11)
             │
             ├── heartbeat thread (pulse every 60s — keeps idle workers ONLINE)
             ├── on startup: start heartbeat thread
@@ -366,7 +424,7 @@ The task lives in `app/workers/tasks.py` (updated in Stage 7 to emit logs and he
 
 | Concept | Detail |
 |---------|--------|
-| **Dispatch** | `job_service.create_job()` commits the job to PostgreSQL, then calls `celery_app.send_task("process_job", [str(job.id)], queue=priority)`. |
+| **Dispatch** | `async_create_job()` commits to PostgreSQL, then `send_task("process_job", [job_id], queue=job_type, priority=0\|5\|9)`. |
 | **Idempotency** | If the job is missing or in a terminal state, the task returns immediately. |
 | **Retry backoff** | 10 s after 1st failure, 60 s after 2nd. After 3 total attempts → `failed`. |
 | **Late ack** | `task_acks_late=True` + `worker_prefetch_multiplier=1`. |
@@ -374,7 +432,7 @@ The task lives in `app/workers/tasks.py` (updated in Stage 7 to emit logs and he
 | **Job logs** | Every lifecycle transition (picked up, failed attempt, permanently failed, completed) writes a `job_logs` row. |
 | **Heartbeat** | On pickup: `beat(status=BUSY, current_job_id=...)`. On completion/failure: `record_completion()`. |
 | **Timing** | Processing wrapped in `timed_block()` — exact duration logged on success. |
-| **Worker identity** | `get_process_worker_name()` returns `celery@{hostname}.{pid}` — stable per process, matches the heartbeat thread. |
+| **Worker identity** | `celery@{hostname}.{pid}.{worker_type}` — matches heartbeat thread (Stage 11). |
 
 ### Celery configuration
 
@@ -386,7 +444,8 @@ The task lives in `app/workers/tasks.py` (updated in Stage 7 to emit logs and he
 | `task_serializer` | `json` | Avoids pickle |
 | `task_acks_late` | `True` | Ack after completion |
 | `worker_prefetch_multiplier` | `1` | One task at a time |
-| `task_queues` | `high`, `normal`, `low` | Named priority queues |
+| `task_queues` | one per `JobType` | Stage 11: type routing |
+| `priority_steps` | `[0, 5, 9]` | Native priority inside each type queue |
 | `visibility_timeout` | `3600` (1 h) | Prevents false redelivery |
 
 ### Observability (Stage 7)
@@ -430,7 +489,7 @@ The heartbeat thread uses `threading.Event` for clean shutdown and exponential b
 | Job counts by status | `GROUP BY status` — hash map aggregation, O(n) |
 | Average processing time | `AVG(updated_at - created_at)` for completed jobs |
 | Slowest job types | `GROUP BY job_type` + `heapq.nlargest(k)` — O(n log k) |
-| Queue size | Sum of `LLEN` across Redis priority queues |
+| Queue size | Sum of `LLEN` across per-type Redis queues |
 | Worker health | From `worker_heartbeats` table after marking stale workers |
 
 #### Decorators and context managers
@@ -509,10 +568,10 @@ The heartbeat thread uses `threading.Event` for clean shutdown and exponential b
 On job creation, the API:
 
 1. Inserts a `pending` job row in PostgreSQL (with priority)
-2. Dispatches a Celery task via `celery_app.send_task("process_job", [str(job.id)], queue=priority)`
+2. Dispatches via `send_task(..., queue=job.job_type.value, priority=PRIORITY_TO_CELERY[priority])`
 3. Returns the job to the caller
 
-The Celery worker runs in its own process, picks up tasks from the Redis broker, processes them via the appropriate handler, and updates PostgreSQL. API and worker share **only** Redis (as Celery broker) and PostgreSQL — not memory.
+Each Stage 11 worker process consumes **only its job-type queue**, runs the matching handler, and updates PostgreSQL. API and workers share **only** Redis (broker) and PostgreSQL — not memory. Models load lazily **per process**, so summarization’s BART RAM is not shared with OCR.
 
 ### Job model
 
@@ -612,19 +671,19 @@ app/
 │   ├── ocr_worker.py                  # OCRHandler: batch pipeline + Pillow (Stage 6)
 │   ├── transcription_worker.py        # TranscriptionHandler: merge intervals (Stage 6)
 │   └── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
-├── config.py                          # Settings + upload config (Stage 9)
-└── main.py                            # Async lifespan, routers, v0.10.0
+├── config.py                          # Settings + WORKER_TYPE + uploads (Stage 9/11)
+└── main.py                            # Async lifespan, routers, v0.11.0
 tests/
 ├── conftest.py                        # Fake Redis, mock Celery, temp upload dir
 ├── test_jobs.py
 ├── test_uploads.py                    # File upload + file_id job flow (Stage 9)
 ├── test_file_storage.py               # Chunking + hashing helpers (Stage 9)
-├── test_celery_dispatch.py            # Priority queue → Celery queue names
+├── test_celery_dispatch.py            # Job-type queue + priority dispatch (Stage 11)
 ├── test_worker.py                     # process_job task (handler mocked)
 └── test_summarization.py              # SummarizationHandler (model mocked)
-Dockerfile                             # Multi-stage API/worker image (Stage 10)
+Dockerfile                             # Multi-stage shared image (Stage 10/11)
 .dockerignore                          # Excludes .venv, uploads, etc. from build context
-docker-compose.yml                     # PostgreSQL + Redis + api + worker (Stage 10)
+docker-compose.yml                     # postgres + redis + api + 5 workers (Stage 11)
 uploads/                               # Local file storage (gitignored; volume in Docker)
 ```
 
@@ -647,25 +706,29 @@ uploads/                               # Local file storage (gitignored; volume 
 
 ## Setup
 
-### Option A — Full Docker (Stage 10, recommended)
+### Option A — Full Docker (Stage 11, recommended)
 
 ```bash
 cd ai-background-worker-platform
 
-# Build images and start postgres, redis, api, worker
+# Build the ONE shared image; start postgres, redis, api, and 5 workers
 docker compose up --build
 
 # Detached:
 # docker compose up -d --build
 ```
 
-Compose injects `DATABASE_URL` / `REDIS_URL` / `UPLOAD_DIR` for containers. Host `.env` is for local runs outside Docker.
+Compose injects `DATABASE_URL` / `REDIS_URL` / `UPLOAD_DIR` / `WORKER_TYPE` for containers. Host `.env` is for local runs outside Docker.
 
 - API: `http://localhost:8000`
-- Health: `GET http://localhost:8000/health`
+- Health: `GET http://localhost:8000/health` → per-type `queues` + `total_queued`
 - Docs: `http://localhost:8000/docs`
 
-Stop with `docker compose down` (add `-v` to wipe volumes).
+Stop without removing containers: `docker compose stop`  
+Remove containers (keep volumes): `docker compose down`  
+Wipe volumes too: `docker compose down -v`
+
+After code changes that are baked into the image, rebuild the services that need them, e.g. `docker compose up -d --build api`.
 
 ### Option B — Local API/worker + Docker infra only
 
@@ -707,10 +770,18 @@ docker compose up
 uvicorn app.main:app --reload
 ```
 
-**Terminal 2 — Celery worker:**
+**Terminal 2 — Celery worker (all types, local single process):**
 
 ```bash
-celery -A app.workers.celery_app worker --loglevel=info --pool=solo --queues=high,normal,low
+celery -A app.workers.celery_app worker --loglevel=info --pool=solo \
+  --queues=summarization,embeddings,ocr,transcription,recommendations
+```
+
+Or run one type at a time (mirrors Compose):
+
+```bash
+WORKER_TYPE=summarization celery -A app.workers.celery_app worker \
+  --loglevel=info --pool=solo --queues=summarization
 ```
 
 - Health: `GET http://localhost:8000/health`
@@ -719,12 +790,12 @@ celery -A app.workers.celery_app worker --loglevel=info --pool=solo --queues=hig
 
 Tables are created automatically on startup via `init_db()`.
 
-> **First ML jobs are slow.** Summarization downloads ~1.6GB; Whisper transcription downloads ~139MB. In Docker these caches live inside the worker container unless you mount a cache volume. Models load once per worker process and stay in RAM for later jobs.
+> **First ML jobs are slow.** Summarization downloads ~1.6GB; Whisper transcription downloads ~139MB. In Docker these caches live **inside that worker’s container** (process isolation). Models load once per process and stay in RAM for later jobs of that type.
 ## API endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Liveness + number of queued Celery tasks |
+| `GET` | `/health` | Liveness + per-type Redis queue sizes (`queues`, `total_queued`) |
 | `POST` | `/jobs` | Create a job (`job_type`, `input`, optional `priority`) |
 | `GET` | `/jobs/{job_id}` | Fetch a job by UUID |
 | `GET` | `/jobs/{job_id}/file` | File metadata linked to a job (Stage 9) |
@@ -807,5 +878,6 @@ Coverage includes job CRUD, file uploads (Stage 9), Celery dispatch, summarizati
 | `UPLOAD_DIR` | Directory for uploaded files | `uploads` (Compose sets `/app/uploads`) |
 | `MAX_UPLOAD_SIZE_BYTES` | Max file upload size in bytes | `52428800` (50 MB) |
 | `UPLOAD_CHUNK_SIZE` | Chunk size for streaming reads/writes | `8192` (8 KB) |
+| `WORKER_TYPE` | Worker identity for heartbeats (`summarization`, `ocr`, …) | `all` (local default) |
 
 See `.env.example` and `.env.test.example` for templates.

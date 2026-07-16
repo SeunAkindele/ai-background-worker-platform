@@ -1,6 +1,41 @@
+# ============================================================
+# YAML Anchors — DRY infrastructure config
+# ============================================================
+# x- prefixed keys are "extension fields" — Docker Compose ignores them
+# but YAML processes them. We use them to define reusable blocks.
+#
+# &worker-env creates a named anchor. <<: *worker-env merges it.
+# This is YAML's native inheritance mechanism — no Docker magic.
+#
+# System Design:
+# Without anchors, adding a 6th worker type means copy-pasting
+# ~20 lines of config and hoping you don't typo the DATABASE_URL.
+# With anchors, you add 8 lines and inherit everything else.
+
+x-worker-env: &worker-env
+  DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_worker_platform
+  REDIS_URL: redis://redis:6379/0
+  APP_ENV: development
+  UPLOAD_DIR: /app/uploads
+
+x-worker-common: &worker-common
+  # All services share this ONE image. Only `api` has build: .
+  # so `docker compose build` builds once; workers reuse the tag.
+  # Each running container adds only a thin writable layer (~5 MB).
+  image: ai-worker-platform:latest
+  restart: unless-stopped
+  volumes:
+    - upload_data:/app/uploads
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+
 services:
   # ============================================================
-  # Infrastructure services (already had these)
+  # Infrastructure
   # ============================================================
   postgres:
     image: postgres:16-alpine
@@ -33,42 +68,21 @@ services:
       retries: 5
 
   # ============================================================
-  # Application services (NEW in Stage 10)
+  # API Server
   # ============================================================
-
-  # --- API Server ---
-  # System Design:
-  # The API is the only public-facing service. It receives HTTP
-  # requests, validates them, writes to Postgres, and pushes
-  # jobs onto the Redis queue. It does NOT process jobs itself.
-  #
-  # depends_on with condition: service_healthy means Docker will
-  # wait until Postgres and Redis pass their health checks before
-  # starting the API. Without this, the API would crash on startup
-  # trying to connect to a database that isn't ready yet.
   api:
+    image: ai-worker-platform:latest
     build: .
     container_name: ai_worker_api
     restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
-      # Notice: "postgres" and "redis" here are Docker service names,
-      # NOT localhost. Docker Compose creates a network and each service
-      # gets a DNS entry matching its service name.
-      #
-      # Python Internals:
-      # pydantic-settings reads these env vars. Because we set them here,
-      # they override anything in .env. The Settings class in config.py
-      # checks env vars first, then falls back to .env file.
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_worker_platform
       REDIS_URL: redis://redis:6379/0
       APP_ENV: development
       UPLOAD_DIR: /app/uploads
     volumes:
-      # Shared volume so API can save uploads and workers can read them.
-      # Without this, a file uploaded via the API would exist only inside
-      # the api container — the worker container couldn't see it.
       - upload_data:/app/uploads
     depends_on:
       postgres:
@@ -76,44 +90,92 @@ services:
       redis:
         condition: service_healthy
 
-  # --- Celery Worker (all job types in one container for now) ---
+  # ============================================================
+  # Workers — one service per job type, same image, different queue
+  # ============================================================
   # System Design:
-  # The worker is the SAME Docker image as the API (same Dockerfile),
-  # but with a different CMD. This is a common pattern:
-  # one image, multiple roles, differentiated by the entrypoint.
+  # Each worker service is the SAME Docker image with a different
+  # command: and WORKER_TYPE env var. This is the "one image, many roles"
+  # pattern. The image contains ALL worker code (summarization, OCR, etc.),
+  # but each container only LOADS the handler it needs because:
+  #   1. It only consumes from its own queue (--queues=<type>)
+  #   2. handlers.py uses lazy loading (import only on first use)
+  #   3. Each container is a separate Python process with its own memory
   #
-  # In Stage 11, you'll split this into separate worker images.
-  # For now, one worker handles all job types.
+  # To scale a specific worker, remove its container_name and add:
+  #   deploy:
+  #     replicas: 3
+  # container_name must be removed because Docker requires unique names,
+  # and replicas create multiple containers from one service definition.
   #
-  # Why --pool=solo?
-  # On macOS/Docker, the default prefork pool can have issues.
-  # Solo runs one task at a time in the main process — simpler
-  # to debug. In production you'd use --pool=prefork --concurrency=4.
-  #
-  # Why --queues=high,normal,low?
-  # Matches the priority queues defined in celery_app.py.
-  # The worker drains "high" before "normal" before "low".
-  worker:
-    build: .
-    container_name: ai_worker_worker
-    restart: unless-stopped
+  # --hostname=<type>@%h gives each worker a unique Celery hostname.
+  # %h expands to the system hostname (the container ID in Docker).
+
+  worker-summarization:
+    <<: *worker-common
+    container_name: ai_worker_summarization
     command: >
       celery -A app.workers.celery_app worker
       --loglevel=info
       --pool=solo
-      --queues=high,normal,low
+      --queues=summarization
+      --hostname=summarization@%h
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_worker_platform
-      REDIS_URL: redis://redis:6379/0
-      APP_ENV: development
-      UPLOAD_DIR: /app/uploads
-    volumes:
-      - upload_data:/app/uploads
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      <<: *worker-env
+      WORKER_TYPE: summarization
+
+  worker-embeddings:
+    <<: *worker-common
+    container_name: ai_worker_embeddings
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      --pool=solo
+      --queues=embeddings
+      --hostname=embeddings@%h
+    environment:
+      <<: *worker-env
+      WORKER_TYPE: embeddings
+
+  worker-ocr:
+    <<: *worker-common
+    container_name: ai_worker_ocr
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      --pool=solo
+      --queues=ocr
+      --hostname=ocr@%h
+    environment:
+      <<: *worker-env
+      WORKER_TYPE: ocr
+
+  worker-transcription:
+    <<: *worker-common
+    container_name: ai_worker_transcription
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      --pool=solo
+      --queues=transcription
+      --hostname=transcription@%h
+    environment:
+      <<: *worker-env
+      WORKER_TYPE: transcription
+
+  worker-recommendations:
+    <<: *worker-common
+    container_name: ai_worker_recommendations
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      --pool=solo
+      --queues=recommendations
+      --hostname=recommendations@%h
+    environment:
+      <<: *worker-env
+      WORKER_TYPE: recommendations
+
 
 volumes:
   postgres_data:

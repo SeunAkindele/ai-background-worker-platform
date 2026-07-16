@@ -2,7 +2,7 @@
 
 Base URL: `http://localhost:8000`
 
-> **Stage 10 (Docker):** With `docker compose up`, the API is published on host port `8000` — the same base URL works. No new HTTP endpoints were added in Stage 10; this guide is unchanged for request/response shapes.
+> **Stage 11 (split workers):** With `docker compose up`, five Celery workers run (one per job type) from the **same image**. HTTP request/response shapes are unchanged except **`GET /health`**. Jobs are routed to a Redis queue named after `job_type`; `priority` still controls ordering inside that queue (Celery integers 0 / 5 / 9).
 
 ---
 
@@ -17,7 +17,7 @@ Base URL: `http://localhost:8000`
 | `POST` | `/uploads` | Upload a file (`multipart`: `file`, `purpose`) |
 | `POST` | `/uploads/job` | Upload + create OCR/transcription job (one-shot) |
 | `GET` | `/uploads/{file_id}` | Upload metadata by file UUID |
-| `GET` | `/health` | Health check |
+| `GET` | `/health` | Health check (per-type queue sizes) |
 | `GET` | `/admin/dashboard` | Full system overview (jobs, workers, queues) |
 | `GET` | `/admin/jobs/{job_id}/logs` | Audit trail / logs for a specific job |
 | `GET` | `/admin/errors` | Recent error logs across all jobs |
@@ -682,11 +682,25 @@ GET /jobs?skip=0&limit=10
 GET /health
 ```
 
-**Response:**
+**Response (Stage 11):**
 
 ```json
-{"status": "ok", "queued_jobs": 0}
+{
+  "status": "ok",
+  "queues": {
+    "summarization": 0,
+    "ocr": 0,
+    "embeddings": 0,
+    "transcription": 0,
+    "recommendations": 0
+  },
+  "total_queued": 0
+}
 ```
+
+`queues` = waiting Celery messages per job-type Redis list (not Postgres job counts). Completed jobs stay in PostgreSQL; they leave the Redis queue when a worker consumes the task.
+
+> Note: with Redis priority sub-lists (`summarization:0`, etc.), plain `LLEN summarization` may under-count. Prefer job status polling for correctness.
 
 ### Dashboard (full system overview)
 
@@ -713,7 +727,7 @@ GET /admin/dashboard
     "workers": [
       {
         "id": "...",
-        "worker_name": "celery@myhost.12345",
+        "worker_name": "celery@myhost.12345.summarization",
         "worker_type": "summarization",
         "status": "busy",
         "last_seen_at": "2026-07-07T15:30:00Z",
@@ -808,6 +822,8 @@ GET /admin/slowest-jobs?k=10
 GET /admin/workers
 ```
 
+With Stage 11 Compose you typically see **five** workers (one per type), each with `worker_type` set from `WORKER_TYPE`.
+
 **Response:**
 
 ```json
@@ -815,16 +831,26 @@ GET /admin/workers
   "workers": [
     {
       "id": "...",
-      "worker_name": "celery@myhost.12345",
-      "worker_type": "general",
+      "worker_name": "celery@3ec3b1a9670a.1.summarization",
+      "worker_type": "summarization",
       "status": "online",
-      "last_seen_at": "2026-07-07T15:35:00Z",
+      "last_seen_at": "2026-07-16T15:35:00Z",
       "current_job_id": null,
-      "jobs_completed": 20,
-      "jobs_failed": 1
+      "jobs_completed": 1,
+      "jobs_failed": 0
+    },
+    {
+      "id": "...",
+      "worker_name": "celery@f1ef18dae3e4.1.embeddings",
+      "worker_type": "embeddings",
+      "status": "online",
+      "last_seen_at": "2026-07-16T15:35:00Z",
+      "current_job_id": null,
+      "jobs_completed": 1,
+      "jobs_failed": 0
     }
   ],
-  "total_online": 1,
+  "total_online": 5,
   "total_busy": 0,
   "total_offline": 0
 }
@@ -878,11 +904,13 @@ Use an OCR-uploaded `file_id` on a transcription job → `400 Bad Request`
 
 All `POST /jobs` requests accept an optional `priority` field:
 
-| Value | Description |
-|-------|-------------|
-| `"high"` | Processed first |
-| `"normal"` | Default |
-| `"low"` | Processed last |
+| Value | Celery priority | Description |
+|-------|-----------------|-------------|
+| `"high"` | `0` | Processed first within that job-type queue |
+| `"normal"` | `5` | Default |
+| `"low"` | `9` | Processed last within that job-type queue |
+
+**Routing (Stage 11):** queue name = `job_type` (e.g. `ocr`). Priority does **not** choose a separate `high`/`normal`/`low` queue anymore.
 
 ---
 
@@ -947,11 +975,12 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 ## Notes
 
-- **Summarization** and **Embeddings** workers download ML models on first use (~1.6GB and ~80MB respectively). First job will be slow.
-- **OCR** requires Tesseract installed on the system (`brew install tesseract`). Without it, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
-- **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (`brew install ffmpeg`) and `openai-whisper` from `requirements.txt`. Model caches at `~/.cache/whisper/base.pt` (~139MB). Duration via mutagen; result includes `source.engine: "whisper"`.
+- **Stage 11 workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, etc. Check `docker compose logs worker-<type>` if a job stays `pending`.
+- **Summarization** and **Embeddings** download ML models on first use (~1.6GB and ~80MB). First job on that worker container is slow.
+- **OCR** requires Tesseract (installed in the Docker runtime image). Without it locally, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
+- **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (in Docker image) and `openai-whisper`. Model caches per container. Duration via mutagen; result includes `source.engine: "whisper"`.
 - **Transcription (text-only)** with `input.text` + `duration` still uses the simulated sliding-window path (no Whisper).
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
-- **File uploads** are stored under `uploads/` (hash-sharded). Same file uploaded twice is deduplicated by SHA-256. Upload fields are **binary multipart**, not filesystem path strings.
+- **File uploads** are stored under `uploads/` (hash-sharded; Docker volume `upload_data`). Same file uploaded twice is deduplicated by SHA-256.
 - **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
 - **Backpressure** — `POST /jobs` and `POST /uploads/job` reject with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).

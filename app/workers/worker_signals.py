@@ -1,7 +1,5 @@
 import logging
-import os
 import threading
-import time
 
 from celery.signals import (
     worker_process_init,
@@ -10,7 +8,9 @@ from celery.signals import (
     worker_shutdown,
 )
 
+from app.config import settings
 from app.core.database import db_session
+from app.models.worker_heartbeat import WorkerStatus
 from app.services.heartbeat_service import (
     HEARTBEAT_INTERVAL_SECONDS,
     heartbeat_service,
@@ -24,7 +24,29 @@ _stop_event = threading.Event()
 MAX_BACKOFF_SECONDS = 300
 
 
-def _heartbeat_loop(worker_name: str) -> None:
+def _heartbeat_loop(worker_name: str, worker_type: str) -> None:
+    """
+    Periodic heartbeat that runs in a daemon thread alongside the Celery worker.
+    Stage 11 change:
+    The loop now receives worker_type and does an initial beat() call
+    to register the correct type BEFORE entering the pulse loop.
+    Previously, the first heartbeat row was created by pulse() with
+    worker_type="general" (the default). It only got the correct type
+    after the first job was processed (when tasks.py called beat()).
+    With split workers, we know the type at startup from the WORKER_TYPE
+    env var, so we register it immediately.
+    """
+    # Initial registration with correct worker_type and ONLINE status.
+    try:
+        with db_session() as db:
+            heartbeat_service.beat(
+                db, worker_name, worker_type, status=WorkerStatus.ONLINE,
+            )
+    except Exception:
+        logger.exception(
+            "Initial heartbeat registration failed for %s", worker_name,
+        )
+
     consecutive_failures = 0
 
     while not _stop_event.is_set():
@@ -60,14 +82,15 @@ def _mark_offline(worker_name: str) -> None:
 def _start_heartbeat_thread() -> None:
     _stop_event.clear()
     worker_name = get_process_worker_name()
+    worker_type = settings.worker_type
     thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(worker_name,),
+        args=(worker_name, worker_type),
         name=f"heartbeat-{worker_name}",
         daemon=True,
     )
     thread.start()
-    logger.info("Started heartbeat thread for %s", worker_name)
+    logger.info("Started heartbeat thread for %s (type=%s)", worker_name, worker_type)
 
 
 def _is_solo_pool(sender) -> bool:
