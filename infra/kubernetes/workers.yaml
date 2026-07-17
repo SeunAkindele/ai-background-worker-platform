@@ -1,0 +1,276 @@
+# Shared pattern: same image, different WORKER_TYPE + celery --queues
+# Scale OCR without scaling summarization: change that Deployment's replicas / HPA.
+#
+# Resource strategy (Stage 12):
+#   summarization / transcription — ML-heavy (BART, Whisper) → ~2Gi memory limit
+#   ocr                             — CPU-bound, reads uploaded files → uploads PVC
+#   embeddings / recommendations    — lighter models, text-only input → no uploads PVC
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-summarization
+  namespace: ai-worker-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+      worker-type: summarization
+  template:
+    metadata:
+      labels:
+        app: worker
+        worker-type: summarization
+    spec:
+      containers:
+        - name: worker
+          image: ai-worker-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args:
+            - "-A"
+            - "app.workers.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "--pool=solo"
+            - "--queues=summarization"
+            - "--hostname=summarization@%h"
+          env:
+            - name: WORKER_TYPE
+              value: summarization
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "celery"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-embeddings
+  namespace: ai-worker-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+      worker-type: embeddings
+  template:
+    metadata:
+      labels:
+        app: worker
+        worker-type: embeddings
+    spec:
+      containers:
+        - name: worker
+          image: ai-worker-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args:
+            - "-A"
+            - "app.workers.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "--pool=solo"
+            - "--queues=embeddings"
+            - "--hostname=embeddings@%h"
+          env:
+            - name: WORKER_TYPE
+              value: embeddings
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "celery"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-ocr
+  namespace: ai-worker-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+      worker-type: ocr
+  template:
+    metadata:
+      labels:
+        app: worker
+        worker-type: ocr
+    spec:
+      containers:
+        - name: worker
+          image: ai-worker-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args:
+            - "-A"
+            - "app.workers.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "--pool=solo"
+            - "--queues=ocr"
+            - "--hostname=ocr@%h"
+          env:
+            - name: WORKER_TYPE
+              value: ocr
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "celery"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-transcription
+  namespace: ai-worker-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+      worker-type: transcription
+  template:
+    metadata:
+      labels:
+        app: worker
+        worker-type: transcription
+    spec:
+      containers:
+        - name: worker
+          image: ai-worker-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args:
+            - "-A"
+            - "app.workers.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "--pool=solo"
+            - "--queues=transcription"
+            - "--hostname=transcription@%h"
+          env:
+            - name: WORKER_TYPE
+              value: transcription
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "celery"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-recommendations
+  namespace: ai-worker-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+      worker-type: recommendations
+  template:
+    metadata:
+      labels:
+        app: worker
+        worker-type: recommendations
+    spec:
+      containers:
+        - name: worker
+          image: ai-worker-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args:
+            - "-A"
+            - "app.workers.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "--pool=solo"
+            - "--queues=recommendations"
+            - "--hostname=recommendations@%h"
+          env:
+            - name: WORKER_TYPE
+              value: recommendations
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "celery"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

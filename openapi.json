@@ -2,7 +2,7 @@
     "openapi": "3.1.0",
     "info": {
         "title": "AI Background Worker Platform",
-        "version": "0.11.0"
+        "version": "0.12.0"
     },
     "paths": {
         "/jobs": {
@@ -565,6 +565,23 @@
                 "summary": "Health",
                 "description": "Health check showing per-queue job counts.\nStage 11 change:\nWith split workers, the old redis_client.llen(\"celery\") returns 0\nbecause there's no longer a single \"celery\" queue. Each job type\nhas its own queue. This endpoint now shows the size of each queue\nso you can see which worker types have backlogs.\nDSA Focus:\nThis is essentially a hash map of queue_name \u2192 size. Iterating\nover all queue names is O(k) where k = number of job types (5).\nEach llen call is O(1) in Redis (Redis stores list length as metadata).\nNote: redis_client is the sync client. For a handful of llen calls\n(each taking microseconds), blocking an async route is acceptable.",
                 "operationId": "health_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/ready": {
+            "get": {
+                "summary": "Ready",
+                "description": "Kubernetes readiness probe target (Stage 12).\nLiveness = process is alive. Readiness = safe to send traffic.\nReturns 200 once the app has started. Stretch goal: ping Postgres/Redis and return 503 if unavailable.",
+                "operationId": "ready_ready_get",
                 "responses": {
                     "200": {
                         "description": "Successful Response",

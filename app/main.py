@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Background Worker Platform",
-    version="0.11.0",
+    version="0.12.0",
     lifespan=lifespan,
 )
 
@@ -68,3 +68,15 @@ async def health():
         "queues": queue_sizes,
         "total_queued": sum(queue_sizes.values()),
     }
+
+
+@app.get("/ready")
+async def ready():
+    """
+    Stage 12: Kubernetes readiness probe target.
+    Liveness = "process is alive" (don't kill if Redis is briefly slow).
+    Readiness = "safe to send traffic" (fail if we can't serve requests).
+    Start simple: always ok once the app started.
+    Stretch: ping Postgres/Redis and return 503 if down.
+    """
+    return {"status": "ready"}

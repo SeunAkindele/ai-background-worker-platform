@@ -2,9 +2,90 @@
 
 A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
 
-**Current stage:** Stage 11 — Split Workers Into Independent Deployments
+**Current stage:** Stage 12 — Kubernetes
 
-## Stage 11 scope (latest)
+## Stage 12 scope (latest)
+
+Stage 12 moves the Stage 11 platform from Docker Compose to **Kubernetes**. The application code is unchanged; deployment is declared as K8s objects under `infra/kubernetes/`. Same shared Docker image, same five worker types — now expressed as Deployments, Services, ConfigMaps, Secrets, PVCs, probes, and HPAs.
+
+| Area | Status |
+|------|--------|
+| **Namespace + ConfigMap + Secret** | **Done** |
+| **Postgres + Redis Deployments + Services + PVC** | **Done** |
+| **API Deployment + Service (NodePort 30080) + probes** | **Done** |
+| **Five worker Deployments (one per job type)** | **Done** |
+| **`GET /ready` for Kubernetes readiness/liveness probes** | **Done** |
+| **Uploads PVC (API + OCR + transcription workers only)** | **Done** |
+| **Per-worker resource limits (ML-heavy → 2Gi memory)** | **Done** |
+| **HPA (OCR on CPU; summarization/transcription on memory)** | **Done** |
+| **Kustomize bundle (`kubectl apply -k`)** | **Done** |
+| **Separate slim Dockerfiles per worker** | Optional stretch |
+
+### What changed from Stage 11
+
+| Stage 11 | Stage 12 |
+|----------|----------|
+| `docker compose up` starts everything | `kubectl apply -k infra/kubernetes/` |
+| Compose `environment:` blocks | ConfigMap + Secret |
+| Compose named volumes | PersistentVolumeClaims |
+| No HTTP probes on API | `/ready` readiness + liveness probes |
+| Manual `deploy.replicas` in Compose | `kubectl scale` + HorizontalPodAutoscaler |
+| All workers mount uploads volume | Only API, OCR, transcription mount uploads PVC |
+| Uniform worker memory | Summarization/transcription → 2Gi; lighter workers → 512Mi–1Gi |
+
+### Architecture (Stage 12)
+
+```
+kubectl apply -k infra/kubernetes/
+  │
+  ├── namespace: ai-worker-platform
+  ├── ConfigMap (APP_ENV, UPLOAD_DIR, rate limits)
+  ├── Secret (DATABASE_URL, REDIS_URL, postgres creds)
+  ├── PVC uploads-pvc ──────────────┐
+  ├── postgres Deployment + Service │
+  ├── redis Deployment + Service    │
+  ├── api Deployment + Service      │
+  │      NodePort :30080 → :8000    │
+  │      probes → GET /ready        │
+  │      UPLOAD_DIR → /app/uploads ─┤
+  ├── worker-summarization (2Gi)    │
+  ├── worker-embeddings             │
+  ├── worker-ocr + uploads PVC ─────┤
+  ├── worker-transcription + PVC ───┤
+  ├── worker-recommendations        │
+  └── HPA (ocr, summarization, transcription)
+         same image, different command / WORKER_TYPE / --queues
+```
+
+### System design / DSA / Python focus (Stage 12)
+
+| Concept | Where |
+|---------|--------|
+| Desired state / declarative infra | Deployment `replicas`, `kubectl apply` |
+| Service discovery | Cluster DNS (`postgres`, `redis`, `api`) |
+| Secrets vs config | Secret for URLs/passwords; ConfigMap for non-sensitive env |
+| Health vs readiness | `/ready` (traffic gate) vs `/health` (queue metrics) |
+| Resource scheduling | `requests`/`limits` per worker type |
+| Autoscaling | HPA on CPU (OCR) and memory (ML workers) |
+| Work distribution | Same Celery per-type queues; more pods = more consumers |
+
+### Kubernetes manifests
+
+```
+infra/kubernetes/
+├── namespace.yaml
+├── configmap.yaml
+├── secret.yaml
+├── pvc-uploads.yaml
+├── postgres.yaml
+├── redis.yaml
+├── api.yaml
+├── workers.yaml
+├── hpa.yaml
+└── kustomization.yaml
+```
+
+## Stage 11 scope
 
 Stage 11 splits the single Celery worker into **five Compose services** (one per job type). They still share **one Docker image** (low disk) and differ only by `command:` / `WORKER_TYPE` / `--queues=...`. Jobs are routed to a queue named after `job_type`; priority uses Celery’s native Redis priority integers.
 
@@ -16,7 +97,6 @@ Stage 11 splits the single Celery worker into **five Compose services** (one per
 | **`WORKER_TYPE` env + heartbeat identity** | **Done** |
 | **YAML anchors** (`x-worker-common`, `x-worker-env`) | **Done** |
 | **`GET /health` returns per-queue sizes** | **Done** |
-| **Separate slim Dockerfiles / Kubernetes** | Stage 12 |
 
 ### What changed from Stage 10
 
@@ -326,6 +406,7 @@ This prevents:
 | 9 | File uploads | Multipart uploads, `job_files`, streaming, SHA-256 dedup |
 | 10 | Dockerize | Multi-stage image, Compose api/worker, CPU torch, shared uploads |
 | 11 | Split workers | Per-type Compose services, job-type queues, native priority |
+| 12 | Kubernetes | K8s Deployments/Services, probes, PVCs, HPA, `/ready` |
 
 ### Architecture (Stage 7)
 
@@ -672,7 +753,19 @@ app/
 │   ├── transcription_worker.py        # TranscriptionHandler: merge intervals (Stage 6)
 │   └── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
 ├── config.py                          # Settings + WORKER_TYPE + uploads (Stage 9/11)
-└── main.py                            # Async lifespan, routers, v0.11.0
+└── main.py                            # Async lifespan, routers, /health, /ready, v0.12.0
+infra/
+└── kubernetes/                        # Stage 12 — K8s manifests (Kustomize)
+    ├── namespace.yaml
+    ├── configmap.yaml
+    ├── secret.yaml
+    ├── pvc-uploads.yaml
+    ├── postgres.yaml
+    ├── redis.yaml
+    ├── api.yaml
+    ├── workers.yaml
+    ├── hpa.yaml
+    └── kustomization.yaml
 tests/
 ├── conftest.py                        # Fake Redis, mock Celery, temp upload dir
 ├── test_jobs.py
@@ -684,12 +777,14 @@ tests/
 Dockerfile                             # Multi-stage shared image (Stage 10/11)
 .dockerignore                          # Excludes .venv, uploads, etc. from build context
 docker-compose.yml                     # postgres + redis + api + 5 workers (Stage 11)
-uploads/                               # Local file storage (gitignored; volume in Docker)
+infra/kubernetes/                      # Stage 12 — same stack on Kubernetes
+uploads/                               # Local file storage (gitignored; volume in Docker/K8s PVC)
 ```
 
 ## Prerequisites
 
 - Docker Desktop (or Docker Engine + Compose)
+- For **Stage 12 (Kubernetes)**: Docker Desktop with **Kubernetes enabled**, or Kind/Minikube + `kubectl`
 - For **local (non-Docker) runs** only: Python 3.11+, Tesseract, ffmpeg, and pip deps
 - ~2GB+ free disk for Docker images and AI models (downloaded once, then cached):
   - Summarization: `facebook/bart-large-cnn` (~1.6GB)
@@ -706,7 +801,54 @@ uploads/                               # Local file storage (gitignored; volume 
 
 ## Setup
 
-### Option A — Full Docker (Stage 11, recommended)
+### Option A — Kubernetes (Stage 12, recommended for cluster learning)
+
+Requires a running cluster (Docker Desktop → Settings → Kubernetes → Enable, or Kind/Minikube).
+
+```bash
+cd ai-background-worker-platform
+
+# 1. Build the shared image (same Dockerfile as Stage 11)
+docker build -t ai-worker-platform:latest .
+
+# 2. Stop Compose if running (avoids port conflicts on 5432/6379/8000)
+docker compose down
+
+# 3. Apply all manifests
+kubectl apply -k infra/kubernetes/
+
+# 4. Wait for pods
+kubectl -n ai-worker-platform get pods -w
+```
+
+Access the API:
+
+```bash
+# NodePort (Docker Desktop / Kind)
+curl http://localhost:30080/ready
+curl http://localhost:30080/health
+
+# Or port-forward
+kubectl -n ai-worker-platform port-forward svc/api 8000:8000
+```
+
+- API: `http://localhost:30080` (NodePort) or `http://localhost:8000` (port-forward)
+- Readiness: `GET /ready` (used by K8s probes)
+- Health: `GET /health` → per-type `queues` + `total_queued`
+- Docs: `http://localhost:30080/docs`
+
+Useful commands:
+
+```bash
+kubectl -n ai-worker-platform logs -l app=api -f
+kubectl -n ai-worker-platform logs -l worker-type=summarization -f
+kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2
+kubectl delete -k infra/kubernetes/   # tear down (keeps PVC data until you delete PVCs)
+```
+
+> **First apply pulls `postgres:16-alpine` and `redis:7-alpine` (~100 MB total, cached after first run). Your app image is reused from local Docker — no re-download if already built.**
+
+### Option B — Full Docker Compose (Stage 11)
 
 ```bash
 cd ai-background-worker-platform
@@ -730,7 +872,7 @@ Wipe volumes too: `docker compose down -v`
 
 After code changes that are baked into the image, rebuild the services that need them, e.g. `docker compose up -d --build api`.
 
-### Option B — Local API/worker + Docker infra only
+### Option C — Local API/worker + Docker infra only
 
 ```bash
 cd ai-background-worker-platform
@@ -795,7 +937,8 @@ Tables are created automatically on startup via `init_db()`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Liveness + per-type Redis queue sizes (`queues`, `total_queued`) |
+| `GET` | `/health` | Per-type Redis queue sizes (`queues`, `total_queued`) |
+| `GET` | `/ready` | Readiness probe target for Kubernetes (Stage 12) |
 | `POST` | `/jobs` | Create a job (`job_type`, `input`, optional `priority`) |
 | `GET` | `/jobs/{job_id}` | Fetch a job by UUID |
 | `GET` | `/jobs/{job_id}/file` | File metadata linked to a job (Stage 9) |
