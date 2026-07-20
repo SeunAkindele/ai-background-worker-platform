@@ -580,7 +580,7 @@
         "/ready": {
             "get": {
                 "summary": "Ready",
-                "description": "Kubernetes readiness probe target (Stage 12).\nLiveness = process is alive. Readiness = safe to send traffic.\nReturns 200 once the app has started. Stretch goal: ping Postgres/Redis and return 503 if unavailable.",
+                "description": "Stage 12: Kubernetes readiness probe target.\nLiveness = \"process is alive\" (don't kill if Redis is briefly slow).\nReadiness = \"safe to send traffic\" (fail if we can't serve requests).\nStart simple: always ok once the app started.\nStretch: ping Postgres/Redis and return 503 if down.",
                 "operationId": "ready_ready_get",
                 "responses": {
                     "200": {
@@ -1198,4 +1198,36 @@
                         "title": "Current Job Id"
                     },
                     "jobs_completed": {
-         
+                        "type": "integer",
+                        "title": "Jobs Completed"
+                    },
+                    "jobs_failed": {
+                        "type": "integer",
+                        "title": "Jobs Failed"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "worker_name",
+                    "worker_type",
+                    "status",
+                    "last_seen_at",
+                    "current_job_id",
+                    "jobs_completed",
+                    "jobs_failed"
+                ],
+                "title": "WorkerHeartbeatResponse"
+            },
+            "WorkerStatus": {
+                "type": "string",
+                "enum": [
+                    "online",
+                    "busy",
+                    "offline"
+                ],
+                "title": "WorkerStatus"
+            }
+        }
+    }
+}
