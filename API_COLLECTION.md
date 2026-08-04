@@ -2,9 +2,11 @@
 
 Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` (Kubernetes NodePort) or `http://localhost:8000` after `kubectl port-forward svc/api 8000:8000`
 
-> **Stage 12 (Kubernetes):** The same HTTP API runs on Kubernetes. Deploy with `kubectl apply -k infra/kubernetes/`. Five worker Deployments consume one queue each; the API Service exposes NodePort `30080`. Kubernetes probes hit `GET /ready`. Request/response shapes are unchanged from Stage 11 except for the new `/ready` endpoint.
+> **Stage 13 (Naive RAG):** Compose runs **seven** Celery workers (one per job type), including `ingestion` and `rag_query`. Postgres uses **pgvector**. New HTTP endpoints: `POST /documents/ingest`, `GET /documents/{id}`, `GET /documents/{id}/chunks`, `POST /rag/query` (async job), `POST /rag/query/sync` (answer in the same response). Prefer Compose for Stage 13; Kubernetes manifests still reflect Stage 12 (five workers, no pgvector) until updated later.
 >
-> **Stage 11 (split workers):** With `docker compose up`, five Celery workers run (one per job type) from the **same image**. Jobs are routed to a Redis queue named after `job_type`; `priority` still controls ordering inside that queue (Celery integers 0 / 5 / 9).
+> **Stage 12 (Kubernetes):** The same core HTTP API runs on Kubernetes. Deploy with `kubectl apply -k infra/kubernetes/`. Five worker Deployments consume one queue each; the API Service exposes NodePort `30080`. Kubernetes probes hit `GET /ready`.
+>
+> **Stage 11 (split workers):** With `docker compose up`, workers share the **same image**. Jobs are routed to a Redis queue named after `job_type`; `priority` still controls ordering inside that queue (Celery integers 0 / 5 / 9).
 
 ---
 
@@ -19,6 +21,11 @@ Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` 
 | `POST` | `/uploads` | Upload a file (`multipart`: `file`, `purpose`) |
 | `POST` | `/uploads/job` | Upload + create OCR/transcription job (one-shot) |
 | `GET` | `/uploads/{file_id}` | Upload metadata by file UUID |
+| `POST` | `/documents/ingest` | Ingest a document into the RAG knowledge base (Stage 13) |
+| `GET` | `/documents/{document_id}` | Get document metadata/status (Stage 13) |
+| `GET` | `/documents/{document_id}/chunks` | List chunks for a document (Stage 13) |
+| `POST` | `/rag/query` | Async RAG query — returns `job_id` (Stage 13) |
+| `POST` | `/rag/query/sync` | Sync RAG query — returns answer in one response (Stage 13) |
 | `GET` | `/health` | Health check (per-type queue sizes) |
 | `GET` | `/ready` | Readiness probe (Kubernetes; Stage 12) |
 | `GET` | `/admin/dashboard` | Full system overview (jobs, workers, queues) |
@@ -591,7 +598,254 @@ Content-Type: application/json
 
 ---
 
-## 6. File Upload Endpoints (Stage 9)
+## 6. Document Ingestion & RAG (Stage 13)
+
+Naive RAG flow: **ingest documents** → store chunk embeddings in Postgres/pgvector → **ask questions** against retrieved context.
+
+### 6a. Ingest a document
+
+```
+POST /documents/ingest
+Content-Type: application/json
+```
+
+**Body:**
+
+```json
+{
+  "title": "Python Asyncio Guide",
+  "content": "Asyncio is a library to write concurrent code using the async/await syntax. An event loop runs coroutines, schedules callbacks, and handles I/O. Transfer learning is unrelated to asyncio, but both appear in modern AI stacks. Coroutines pause at await points so other tasks can run.",
+  "source": "text",
+  "metadata": {
+    "author": "docs team",
+    "category": "python"
+  },
+  "chunk_size": 512,
+  "chunk_overlap": 50
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `title` | yes | Human-readable name (1–500 chars) |
+| `content` | yes | Full document text to chunk + embed |
+| `source` | no | Default `"text"` (`text`, `upload`, `url`, …) |
+| `metadata` | no | Optional JSON object (author, tags, etc.) |
+| `chunk_size` | no | Words per chunk (default `512`, range 50–2000) |
+| `chunk_overlap` | no | Overlap between chunks (default `50`, range 0–500) |
+
+**Response (201):**
+
+```json
+{
+  "document": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "title": "Python Asyncio Guide",
+    "source": "text",
+    "status": "pending",
+    "metadata": {"author": "docs team", "category": "python"},
+    "chunk_size": 512,
+    "chunk_overlap": 50,
+    "created_at": "2026-08-04T12:00:00Z",
+    "updated_at": "2026-08-04T12:00:00Z"
+  },
+  "job_id": "660e8400-e29b-41d4-a716-446655440001",
+  "message": "Document submitted for ingestion"
+}
+```
+
+Poll `GET /jobs/{job_id}` until `status` is `completed`. Document status becomes `ready` when chunks + embeddings are stored.
+
+**Expected `result_payload` (ingestion job):**
+
+```json
+{
+  "document_id": "550e8400-e29b-41d4-a716-446655440000",
+  "title": "Python Asyncio Guide",
+  "chunks_created": 1,
+  "embedding_dimensions": 384,
+  "model": "all-MiniLM-L6-v2",
+  "status": "ready"
+}
+```
+
+```bash
+curl -X POST http://localhost:8000/documents/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Python Asyncio Guide",
+    "content": "Asyncio is a library to write concurrent code using async/await...",
+    "source": "text",
+    "chunk_size": 512,
+    "chunk_overlap": 50
+  }'
+```
+
+### 6b. Get document metadata
+
+```
+GET /documents/{document_id}
+```
+
+**Response (200):** same shape as `document` in the ingest response. Status progresses `pending` → `ingesting` → `ready` (or `failed`).
+
+### 6c. List document chunks
+
+```
+GET /documents/{document_id}/chunks?skip=0&limit=50
+```
+
+**Response (200):**
+
+```json
+{
+  "chunks": [
+    {
+      "id": "...",
+      "document_id": "550e8400-e29b-41d4-a716-446655440000",
+      "content": "Asyncio is a library to write concurrent code...",
+      "chunk_index": 0,
+      "token_count": 42,
+      "metadata": {"start_word": 0, "end_word": 30},
+      "created_at": "2026-08-04T12:00:05Z"
+    }
+  ],
+  "total": 1,
+  "document_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### 6d. Async RAG query (returns job_id)
+
+```
+POST /rag/query
+Content-Type: application/json
+```
+
+**Body:**
+
+```json
+{
+  "question": "How does Python asyncio work?",
+  "top_k": 5,
+  "document_ids": ["550e8400-e29b-41d4-a716-446655440000"]
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `question` | yes | Question to answer (1–2000 chars) |
+| `top_k` | no | Chunks to retrieve (default `5`, range 1–50) |
+| `document_ids` | no | Limit search to these document UUIDs |
+
+**Response (202 Accepted):**
+
+```json
+{
+  "job_id": "770e8400-e29b-41d4-a716-446655440002",
+  "message": "RAG query submitted"
+}
+```
+
+Poll `GET /jobs/{job_id}` for the answer.
+
+**Expected `result_payload` (rag_query job):**
+
+```json
+{
+  "question": "How does Python asyncio work?",
+  "answer": "...",
+  "sources": [
+    {
+      "chunk_id": "...",
+      "document_id": "550e8400-e29b-41d4-a716-446655440000",
+      "document_title": "Python Asyncio Guide",
+      "chunk_index": 0,
+      "similarity": 0.82,
+      "text_preview": "Asyncio is a library to write concurrent code..."
+    }
+  ],
+  "chunks_retrieved": 1,
+  "top_k_requested": 5,
+  "model": "all-MiniLM-L6-v2"
+}
+```
+
+```bash
+curl -X POST http://localhost:8000/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"How does Python asyncio work?","top_k":5}'
+```
+
+### 6e. Sync RAG query (ChatGPT-style — answer in one response)
+
+```
+POST /rag/query/sync
+Content-Type: application/json
+```
+
+Same request body as `6d`. Returns **200** with the answer directly (no `job_id`). Blocks until embed → retrieve → generate finishes (often 2–10s). Uses the same `RAGQueryHandler` logic as the async worker.
+
+**Response (200):**
+
+```json
+{
+  "question": "How does Python asyncio work?",
+  "answer": "...",
+  "sources": [
+    {
+      "chunk_id": "...",
+      "document_id": "...",
+      "document_title": "Python Asyncio Guide",
+      "chunk_index": 0,
+      "similarity": 0.82,
+      "text_preview": "Asyncio is a library..."
+    }
+  ],
+  "chunks_retrieved": 1,
+  "top_k_requested": 5,
+  "model": "all-MiniLM-L6-v2"
+}
+```
+
+```bash
+curl -X POST http://localhost:8000/rag/query/sync \
+  -H "Content-Type: application/json" \
+  -d '{"question":"How does Python asyncio work?","top_k":5}'
+```
+
+### 6f. Create ingestion / rag_query jobs via `POST /jobs`
+
+You can also enqueue these job types through the generic jobs API:
+
+```json
+{
+  "job_type": "ingestion",
+  "priority": "normal",
+  "input": {
+    "document_id": "550e8400-e29b-41d4-a716-446655440000",
+    "chunk_size": 512,
+    "chunk_overlap": 50
+  }
+}
+```
+
+```json
+{
+  "job_type": "rag_query",
+  "priority": "normal",
+  "input": {
+    "question": "How does Python asyncio work?",
+    "top_k": 5
+  }
+}
+```
+
+Prefer `POST /documents/ingest` and `POST /rag/query` — they create the document row / validate input for you.
+
+---
+
+## 7. File Upload Endpoints (Stage 9)
 
 ### Upload a file
 
@@ -630,7 +884,7 @@ GET /jobs/{job_id}/file
 
 ---
 
-## 7. Check Job Status
+## 8. Check Job Status
 
 After creating any job, use the returned `id` to poll status:
 
@@ -660,7 +914,7 @@ Or on failure:
 
 ---
 
-## 8. List All Jobs
+## 9. List All Jobs
 
 ```
 GET /jobs?skip=0&limit=10
@@ -677,7 +931,7 @@ GET /jobs?skip=0&limit=10
 
 ---
 
-## 9. Health & Admin
+## 10. Health & Admin
 
 ### Readiness Check (Stage 12)
 
@@ -712,7 +966,7 @@ curl http://localhost:8000/ready
 GET /health
 ```
 
-**Response (Stage 11):**
+**Response (Stage 13):**
 
 ```json
 {
@@ -722,7 +976,9 @@ GET /health
     "ocr": 0,
     "embeddings": 0,
     "transcription": 0,
-    "recommendations": 0
+    "recommendations": 0,
+    "ingestion": 0,
+    "rag_query": 0
   },
   "total_queued": 0
 }
@@ -852,7 +1108,7 @@ GET /admin/slowest-jobs?k=10
 GET /admin/workers
 ```
 
-With Stage 11 Compose or Stage 12 Kubernetes you typically see **five** workers (one per type), each with `worker_type` set from `WORKER_TYPE`.
+With Stage 13 Compose you typically see **seven** workers (one per type), each with `worker_type` set from `WORKER_TYPE`. Stage 12 Kubernetes manifests still deploy five workers until updated.
 
 **Response:**
 
@@ -880,7 +1136,7 @@ With Stage 11 Compose or Stage 12 Kubernetes you typically see **five** workers 
       "jobs_failed": 0
     }
   ],
-  "total_online": 5,
+  "total_online": 7,
   "total_busy": 0,
   "total_offline": 0
 }
@@ -928,6 +1184,26 @@ Use an OCR-uploaded `file_id` on a transcription job → `400 Bad Request`
 {"job_type": "recommendations", "input": {"user_id": "user_1"}}
 ```
 
+**Ingestion — missing document_id:**
+```json
+{"job_type": "ingestion", "input": {}}
+```
+
+**RAG query — empty question:**
+```json
+{"job_type": "rag_query", "input": {"question": ""}}
+```
+
+**Document ingest — empty content (422):**
+```json
+{"title": "Doc", "content": ""}
+```
+
+**RAG sync — empty question (422):**
+```json
+{"question": ""}
+```
+
 ---
 
 ## Priority Values
@@ -944,7 +1220,7 @@ All `POST /jobs` requests accept an optional `priority` field:
 
 ---
 
-## 10. Rate Limiting (Stage 8)
+## 11. Rate Limiting (Stage 8)
 
 All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
 
@@ -971,7 +1247,7 @@ HTTP/1.1 429 Too Many Requests
 
 ### Backpressure — too many pending jobs (429)
 
-When `POST /jobs` is called and there are already too many pending jobs (default: 50):
+When `POST /jobs`, `POST /uploads/job`, `POST /documents/ingest`, or `POST /rag/query` is called and there are already too many pending jobs (default: 50):
 
 ```
 HTTP/1.1 429 Too Many Requests
@@ -1005,13 +1281,15 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 ## Notes
 
-- **Stage 12 (Kubernetes):** Run `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. OCR/transcription workers mount the uploads PVC; summarization/embeddings/recommendations do not. Scale a worker type: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
-- **Stage 11 workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, etc. Check `docker compose logs worker-<type>` (Compose) or `kubectl logs -l worker-type=<type>` (K8s) if a job stays `pending`.
+- **Stage 13 (Naive RAG):** Use `docker compose up -d`. Postgres image is `pgvector/pgvector:pg16` with `CREATE EXTENSION vector`. Workers include `worker-ingestion` and `worker-rag-query`. Ingest via `POST /documents/ingest`, then ask via `POST /rag/query` (async) or `POST /rag/query/sync` (direct answer). First ingestion/RAG jobs download embedding (~80MB) and BART (~1.6GB) models.
+- **Stage 12 (Kubernetes):** Run `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. Current K8s manifests still deploy five workers and non-pgvector Postgres — update before using RAG on K8s. Scale a worker type: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
+- **Stage 11+ workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, ingestion by `worker-ingestion`, etc. Check `docker compose logs worker-<type>` (Compose) or `kubectl logs -l worker-type=<type>` (K8s) if a job stays `pending`.
 - **Summarization** and **Embeddings** download ML models on first use (~1.6GB and ~80MB). First job on that worker container is slow.
 - **OCR** requires Tesseract (installed in the Docker runtime image). Without it locally, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
 - **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (in Docker image) and `openai-whisper`. Model caches per container. Duration via mutagen; result includes `source.engine: "whisper"`.
 - **Transcription (text-only)** with `input.text` + `duration` still uses the simulated sliding-window path (no Whisper).
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
+- **RAG** reuses `all-MiniLM-L6-v2` for embeddings and BART for answer generation (naive Stage 13 quality). Prefer sync endpoint for demos; async for agents/heavy load.
 - **File uploads** are stored under `uploads/` (hash-sharded; Docker volume `upload_data`). Same file uploaded twice is deduplicated by SHA-256.
 - **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
-- **Backpressure** — `POST /jobs` and `POST /uploads/job` reject with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).
+- **Backpressure** — `POST /jobs`, `POST /uploads/job`, `POST /documents/ingest`, and `POST /rag/query` reject with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).

@@ -1,12 +1,86 @@
 # AI Background Worker Platform
 
-A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
+A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations, **document ingestion**, and **RAG query**).
 
-**Current stage:** Stage 12 — Kubernetes
+**Current stage:** Stage 13 — Naive RAG (Foundation)
 
-## Stage 12 scope (latest)
+## Stage 13 scope (latest)
+
+Stage 13 adds **naive RAG** on Docker Compose: ingest documents into Postgres + **pgvector**, retrieve top-K chunks by cosine similarity, and generate an answer from retrieved context. Two new job types (`ingestion`, `rag_query`) and dedicated workers reuse the existing embeddings model and summarization pipeline.
+
+| Area | Status |
+|------|--------|
+| **pgvector Postgres** (`pgvector/pgvector:pg16` + `init-db/01-extensions.sql`) | **Done** |
+| **Tables:** `documents`, `chunks`, `chunk_embeddings` (+ HNSW index) | **Done** |
+| **Job types:** `ingestion`, `rag_query` | **Done** |
+| **Workers:** `worker-ingestion`, `worker-rag-query` | **Done** |
+| **`POST /documents/ingest`** | **Done** |
+| **`GET /documents/{id}`**, **`GET /documents/{id}/chunks`** | **Done** |
+| **`POST /rag/query`** (async → poll `GET /jobs/{id}`) | **Done** |
+| **`POST /rag/query/sync`** (answer in one response) | **Done** |
+| **Kubernetes manifests updated for RAG** | Deferred (use Compose for Stage 13–15) |
+
+### What changed from Stage 12
+
+| Stage 12 | Stage 13 |
+|----------|----------|
+| Five job types / five Compose workers | **Seven** job types / seven Compose workers |
+| Postgres without vectors | **pgvector** + chunk embeddings |
+| No knowledge-base APIs | Document ingest + RAG query endpoints |
+| K8s as primary deploy path for learning | **Compose** for RAG; K8s refresh after Stages 13–15 |
+
+### Architecture (Stage 13)
+
+```
+docker compose up
+  │
+  ├── postgres (pgvector) + redis
+  ├── api  :8000
+  │      POST /documents/ingest  → Document + INGESTION job
+  │      POST /rag/query         → RAG_QUERY job (poll GET /jobs/{id})
+  │      POST /rag/query/sync    → answer inline (same handler)
+  ├── worker-summarization
+  ├── worker-embeddings
+  ├── worker-ocr
+  ├── worker-transcription
+  ├── worker-recommendations
+  ├── worker-ingestion           --queues=ingestion
+  └── worker-rag-query           --queues=rag_query
+         same image, different command / WORKER_TYPE
+```
+
+### DSA focus (Stage 13)
+
+| Concept | Where |
+|---------|--------|
+| Sliding-window chunking | `ingestion_worker._chunk_text` |
+| Batch embedding | `ingestion_worker._embed_in_batches` |
+| Top-K vector search (cosine / HNSW) | `rag_query_worker._retrieve_top_k` + pgvector `<=>` |
+| Prompt assembly from retrieved context | `rag_query_worker._build_prompt` |
+
+### RAG quick start
+
+```bash
+# 1. Ingest
+curl -X POST http://localhost:8000/documents/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Demo","content":"Asyncio lets you write concurrent Python with async/await."}'
+
+# 2. Poll ingestion job until completed, then ask (sync):
+curl -X POST http://localhost:8000/rag/query/sync \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is asyncio?","top_k":5}'
+```
+
+Full examples: [`API_COLLECTION.md`](API_COLLECTION.md) §6. OpenAPI: [`openapi.json`](openapi.json).
+
+---
+
+## Stage 12 scope
 
 Stage 12 moves the Stage 11 platform from Docker Compose to **Kubernetes**. The application code is unchanged; deployment is declared as K8s objects under `infra/kubernetes/`. Same shared Docker image, same five worker types — now expressed as Deployments, Services, ConfigMaps, Secrets, PVCs, probes, and HPAs.
+
+> **Note:** Stage 13 RAG is validated on **Compose**. K8s manifests still describe the Stage 12 (five-worker, non-pgvector) stack; update them after RAG Stages 13–15 if you want cluster deploy.
 
 | Area | Status |
 |------|--------|
@@ -658,7 +732,7 @@ Each Stage 11 worker process consumes **only its job-type queue**, runs the matc
 
 **Statuses:** `pending` → `processing` → `completed` | `failed`
 
-**Types:** `summarization`, `ocr`, `embeddings`, `transcription`, `recommendations`
+**Types:** `summarization`, `ocr`, `embeddings`, `transcription`, `recommendations`, `ingestion`, `rag_query`
 
 **Priorities:** `high`, `normal` (default), `low`
 
@@ -671,6 +745,8 @@ Each Stage 11 worker process consumes **only its job-type queue**, runs the matc
 | OCR | Batch pipeline, generator streaming | O(n * pixels) total, O(pixels) memory |
 | Transcription | Merge intervals, timestamp alignment | O(n log n) sort + O(n) merge |
 | Recommendations | Graph adjacency list, Jaccard, Top-K heap | O(E) build, O(n log k) top-K |
+| Ingestion | Sliding-window chunking + batch embed + store | O(n) chunk, O(n·d) embed |
+| RAG query | Top-K ANN (pgvector HNSW) + prompt + generate | O(log n) retrieve with index |
 
 ### DSA concepts in Stage 7
 
@@ -716,6 +792,7 @@ app/
 ├── api/
 │   ├── jobs.py                        # Async job CRUD + file metadata (Stage 9)
 │   ├── uploads.py                     # Multipart file upload endpoints (Stage 9)
+│   ├── documents.py                   # Document ingest + RAG query endpoints (Stage 13)
 │   └── admin.py                       # Async admin endpoints + rate limiting (Stage 8)
 ├── core/
 │   ├── database.py                    # Sync + async engines, sessions, dependencies (Stage 8)
@@ -725,16 +802,19 @@ app/
 │   └── redis_client.py                # Shared Redis connection
 ├── models/
 │   ├── __init__.py                    # Imports all models for create_all
-│   ├── job.py                         # Job ORM model, enums
+│   ├── job.py                         # Job ORM model, enums (+ ingestion, rag_query)
+│   ├── document.py                    # Document / Chunk / ChunkEmbedding (Stage 13)
 │   ├── job_file.py                    # JobFile ORM model (Stage 9)
 │   ├── job_log.py                     # JobLog ORM model (Stage 7)
 │   └── worker_heartbeat.py            # WorkerHeartbeat ORM model (Stage 7)
 ├── schemas/
 │   ├── job_schema.py                  # Pydantic request/response + per-type input validation
+│   ├── document_schema.py             # Ingest / RAG / chunk schemas (Stage 13)
 │   ├── file_schema.py                 # Upload response schemas (Stage 9)
 │   └── admin_schema.py                # Admin response schemas (Stage 7)
 ├── services/
 │   ├── job_service.py                 # Async API + sync worker methods + Celery dispatch
+│   ├── document_service.py            # Ingest + RAG job submit + sync RAG (Stage 13)
 │   ├── file_service.py                # Upload save, dedup lookup, job linking (Stage 9)
 │   ├── log_service.py                 # Async reads + sync add_log for workers (Stage 8)
 │   ├── heartbeat_service.py           # Async staleness check + sync worker heartbeats (Stage 8)
@@ -751,11 +831,13 @@ app/
 │   ├── embedding_worker.py            # EmbeddingHandler: vectors + cosine similarity (Stage 6)
 │   ├── ocr_worker.py                  # OCRHandler: batch pipeline + Pillow (Stage 6)
 │   ├── transcription_worker.py        # TranscriptionHandler: merge intervals (Stage 6)
-│   └── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
+│   ├── recommendation_worker.py       # RecommendationHandler: graph + heap (Stage 6)
+│   ├── ingestion_worker.py            # IngestionHandler: chunk → embed → store (Stage 13)
+│   └── rag_query_worker.py            # RAGQueryHandler: retrieve → prompt → answer (Stage 13)
 ├── config.py                          # Settings + WORKER_TYPE + uploads (Stage 9/11)
-└── main.py                            # Async lifespan, routers, /health, /ready, v0.12.0
+└── main.py                            # Async lifespan, routers, /health, /ready
 infra/
-└── kubernetes/                        # Stage 12 — K8s manifests (Kustomize)
+└── kubernetes/                        # Stage 12 — K8s manifests (Kustomize; RAG update later)
     ├── namespace.yaml
     ├── configmap.yaml
     ├── secret.yaml
@@ -766,6 +848,8 @@ infra/
     ├── workers.yaml
     ├── hpa.yaml
     └── kustomization.yaml
+init-db/
+└── 01-extensions.sql                  # CREATE EXTENSION vector (Stage 13)
 tests/
 ├── conftest.py                        # Fake Redis, mock Celery, temp upload dir
 ├── test_jobs.py
@@ -776,7 +860,9 @@ tests/
 └── test_summarization.py              # SummarizationHandler (model mocked)
 Dockerfile                             # Multi-stage shared image (Stage 10/11)
 .dockerignore                          # Excludes .venv, uploads, etc. from build context
-docker-compose.yml                     # postgres + redis + api + 5 workers (Stage 11)
+docker-compose.yml                     # postgres (pgvector) + redis + api + 7 workers (Stage 13)
+API_COLLECTION.md                      # Curl / request examples for all workers + RAG
+openapi.json                           # OpenAPI 3.1 export (includes Stage 13 paths)
 infra/kubernetes/                      # Stage 12 — same stack on Kubernetes
 uploads/                               # Local file storage (gitignored; volume in Docker/K8s PVC)
 ```
@@ -853,7 +939,7 @@ kubectl delete -k infra/kubernetes/   # tear down (keeps PVC data until you dele
 ```bash
 cd ai-background-worker-platform
 
-# Build the ONE shared image; start postgres, redis, api, and 5 workers
+# Build the ONE shared image; start postgres, redis, api, and 7 workers
 docker compose up --build
 
 # Detached:
@@ -916,7 +1002,7 @@ uvicorn app.main:app --reload
 
 ```bash
 celery -A app.workers.celery_app worker --loglevel=info --pool=solo \
-  --queues=summarization,embeddings,ocr,transcription,recommendations
+  --queues=summarization,embeddings,ocr,transcription,recommendations,ingestion,rag_query
 ```
 
 Or run one type at a time (mirrors Compose):
@@ -930,9 +1016,9 @@ WORKER_TYPE=summarization celery -A app.workers.celery_app worker \
 - Dashboard: `GET http://localhost:8000/admin/dashboard`
 - Interactive docs: `http://localhost:8000/docs`
 
-Tables are created automatically on startup via `init_db()`.
+Tables are created automatically on startup via `init_db()`. For Stage 13 on an **existing** DB volume, ensure pgvector is enabled and enum values exist (see Stage 13 notes below).
 
-> **First ML jobs are slow.** Summarization downloads ~1.6GB; Whisper transcription downloads ~139MB. In Docker these caches live **inside that worker’s container** (process isolation). Models load once per process and stay in RAM for later jobs of that type.
+> **First ML jobs are slow.** Summarization downloads ~1.6GB; Whisper transcription downloads ~139MB; embeddings/RAG use `all-MiniLM-L6-v2` (~80MB). In Docker these caches live **inside that worker’s container** (process isolation). Models load once per process and stay in RAM for later jobs of that type.
 ## API endpoints
 
 | Method | Path | Description |
@@ -946,6 +1032,11 @@ Tables are created automatically on startup via `init_db()`.
 | `POST` | `/uploads` | Upload a file (`multipart`: `file`, `purpose`) (Stage 9) |
 | `POST` | `/uploads/job` | Upload + create OCR/transcription job in one request (Stage 9) |
 | `GET` | `/uploads/{file_id}` | Upload metadata by file UUID (Stage 9) |
+| `POST` | `/documents/ingest` | Ingest text into the RAG knowledge base (Stage 13) |
+| `GET` | `/documents/{document_id}` | Document metadata/status (Stage 13) |
+| `GET` | `/documents/{document_id}/chunks` | List chunks for a document (Stage 13) |
+| `POST` | `/rag/query` | Async RAG query — returns `job_id` (Stage 13) |
+| `POST` | `/rag/query/sync` | Sync RAG query — returns answer + sources (Stage 13) |
 | `GET` | `/admin/dashboard` | Full system overview (job counts, queue size, workers) |
 | `GET` | `/admin/jobs/{job_id}/logs` | Audit trail for a specific job (`skip`, `limit`) |
 | `GET` | `/admin/errors` | Recent error logs across all jobs (`skip`, `limit`) |
@@ -996,7 +1087,45 @@ curl -X POST http://localhost:8000/uploads/job \
 
 Poll `GET /jobs/{job_id}` to watch status move from `pending` → `processing` → `completed`. Completed file jobs include `source.engine: "whisper"` in `result_payload`.
 
-> For full request examples for all 5 worker types (including batch, edge cases, and validation errors), see [`API_COLLECTION.md`](API_COLLECTION.md).
+**Quick example — RAG ingest + sync query (Stage 13):**
+
+```bash
+# Ingest a document (returns document + job_id)
+curl -X POST http://localhost:8000/documents/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Asyncio notes",
+    "content": "Asyncio is a library to write concurrent code using async/await. The event loop schedules coroutines.",
+    "chunk_size": 512,
+    "chunk_overlap": 50
+  }'
+
+# Wait until ingestion job completes, then ask (answer in one response):
+curl -X POST http://localhost:8000/rag/query/sync \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is asyncio?","top_k":5}'
+
+# Or async: POST /rag/query → poll GET /jobs/{job_id}
+```
+
+> For full request examples for all worker types + RAG (including batch, edge cases, and validation errors), see [`API_COLLECTION.md`](API_COLLECTION.md). Machine-readable schemas: [`openapi.json`](openapi.json).
+
+### Stage 13 DB one-time setup (existing volumes)
+
+If Postgres was created **before** Stage 13, init scripts do not re-run. Apply once:
+
+```bash
+docker exec -i ai_worker_postgres psql -U postgres -d ai_worker_platform <<'SQL'
+CREATE EXTENSION IF NOT EXISTS vector;
+ALTER TYPE jobtype ADD VALUE IF NOT EXISTS 'ingestion';
+ALTER TYPE jobtype ADD VALUE IF NOT EXISTS 'rag_query';
+-- Optional: match uppercase labels used by older SQLAlchemy enums
+-- ALTER TYPE jobtype RENAME VALUE 'ingestion' TO 'INGESTION';
+-- ALTER TYPE jobtype RENAME VALUE 'rag_query' TO 'RAG_QUERY';
+SQL
+```
+
+Fresh volume (`docker compose down -v && docker compose up -d --build`): `init-db/01-extensions.sql` enables pgvector automatically; `init_db()` creates tables on API startup.
 
 ## Tests
 

@@ -2,7 +2,7 @@
     "openapi": "3.1.0",
     "info": {
         "title": "AI Background Worker Platform",
-        "version": "0.12.0"
+        "version": "0.13.0"
     },
     "paths": {
         "/jobs": {
@@ -560,6 +560,239 @@
                 }
             }
         },
+        "/documents/ingest": {
+            "post": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Ingest Document",
+                "operationId": "ingest_document_documents_ingest_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DocumentIngestRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DocumentIngestResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/{document_id}": {
+            "get": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Get Document",
+                "operationId": "get_document_documents__document_id__get",
+                "parameters": [
+                    {
+                        "name": "document_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "title": "Document Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DocumentResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/{document_id}/chunks": {
+            "get": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Get Document Chunks",
+                "operationId": "get_document_chunks_documents__document_id__chunks_get",
+                "parameters": [
+                    {
+                        "name": "document_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "title": "Document Id"
+                        }
+                    },
+                    {
+                        "name": "skip",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0,
+                            "title": "Skip"
+                        }
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 100,
+                            "minimum": 1,
+                            "default": 50,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChunkListResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/rag/query": {
+            "post": {
+                "tags": [
+                    "rag"
+                ],
+                "summary": "Rag Query Async",
+                "operationId": "rag_query_async_rag_query_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RAGQueryRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "202": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RAGQueryResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/rag/query/sync": {
+            "post": {
+                "tags": [
+                    "rag"
+                ],
+                "summary": "Rag Query Sync",
+                "description": "ChatGPT-style: ask a question, get the answer in the same response.\n\nNo job_id. No polling. Blocks until RAG finishes (typically 2-10s).",
+                "operationId": "rag_query_sync_rag_query_sync_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RAGQueryRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RAGQuerySyncResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/health": {
             "get": {
                 "summary": "Health",
@@ -637,6 +870,86 @@
                 ],
                 "title": "Body_upload_file_uploads_post"
             },
+            "ChunkListResponse": {
+                "properties": {
+                    "chunks": {
+                        "items": {
+                            "$ref": "#/components/schemas/ChunkResponse"
+                        },
+                        "type": "array",
+                        "title": "Chunks"
+                    },
+                    "total": {
+                        "type": "integer",
+                        "title": "Total"
+                    },
+                    "document_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Document Id"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "chunks",
+                    "total",
+                    "document_id"
+                ],
+                "title": "ChunkListResponse"
+            },
+            "ChunkResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Id"
+                    },
+                    "document_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Document Id"
+                    },
+                    "content": {
+                        "type": "string",
+                        "title": "Content"
+                    },
+                    "chunk_index": {
+                        "type": "integer",
+                        "title": "Chunk Index"
+                    },
+                    "token_count": {
+                        "type": "integer",
+                        "title": "Token Count"
+                    },
+                    "metadata_": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Metadata"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "document_id",
+                    "content",
+                    "chunk_index",
+                    "token_count",
+                    "created_at"
+                ],
+                "title": "ChunkResponse"
+            },
             "DashboardResponse": {
                 "properties": {
                     "total_jobs": {
@@ -698,6 +1011,150 @@
                     "workers"
                 ],
                 "title": "DashboardResponse"
+            },
+            "DocumentIngestRequest": {
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "minLength": 1,
+                        "title": "Title",
+                        "description": "Human-readable name for this document"
+                    },
+                    "content": {
+                        "type": "string",
+                        "minLength": 1,
+                        "title": "Content",
+                        "description": "The full text content to ingest"
+                    },
+                    "source": {
+                        "type": "string",
+                        "title": "Source",
+                        "description": "Where this document came from: 'text', 'upload', 'url'",
+                        "default": "text"
+                    },
+                    "metadata": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Metadata",
+                        "description": "Optional metadata (author, department, tags, etc.)"
+                    },
+                    "chunk_size": {
+                        "type": "integer",
+                        "maximum": 2000.0,
+                        "minimum": 50.0,
+                        "title": "Chunk Size",
+                        "default": 512
+                    },
+                    "chunk_overlap": {
+                        "type": "integer",
+                        "maximum": 500.0,
+                        "minimum": 0.0,
+                        "title": "Chunk Overlap",
+                        "default": 50
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "title",
+                    "content"
+                ],
+                "title": "DocumentIngestRequest",
+                "description": "Request body for document ingestion.\n\nThe client sends the document text + metadata.\nThe API creates a Document row and dispatches an INGESTION job."
+            },
+            "DocumentIngestResponse": {
+                "properties": {
+                    "document": {
+                        "$ref": "#/components/schemas/DocumentResponse"
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Job Id"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "default": "Document submitted for ingestion"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "document",
+                    "job_id"
+                ],
+                "title": "DocumentIngestResponse",
+                "description": "Response after submitting a document for ingestion.\nIncludes both the document record and the job ID for polling."
+            },
+            "DocumentResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Id"
+                    },
+                    "title": {
+                        "type": "string",
+                        "title": "Title"
+                    },
+                    "source": {
+                        "type": "string",
+                        "title": "Source"
+                    },
+                    "status": {
+                        "type": "string",
+                        "title": "Status"
+                    },
+                    "metadata_": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Metadata"
+                    },
+                    "chunk_size": {
+                        "type": "integer",
+                        "title": "Chunk Size"
+                    },
+                    "chunk_overlap": {
+                        "type": "integer",
+                        "title": "Chunk Overlap"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Updated At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "title",
+                    "source",
+                    "status",
+                    "chunk_size",
+                    "chunk_overlap",
+                    "created_at",
+                    "updated_at"
+                ],
+                "title": "DocumentResponse"
             },
             "FilePurpose": {
                 "type": "string",
@@ -1023,7 +1480,9 @@
                     "ocr",
                     "embeddings",
                     "transcription",
-                    "recommendations"
+                    "recommendations",
+                    "ingestion",
+                    "rag_query"
                 ],
                 "title": "JobType"
             },
@@ -1066,6 +1525,157 @@
                     "debug"
                 ],
                 "title": "LogLevel"
+            },
+            "RAGQueryRequest": {
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "maxLength": 2000,
+                        "minLength": 1,
+                        "title": "Question",
+                        "description": "The question to answer"
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "title": "Top K",
+                        "description": "Number of chunks to retrieve",
+                        "default": 5
+                    },
+                    "document_ids": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string",
+                                    "format": "uuid"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Document Ids",
+                        "description": "Limit retrieval to these documents only"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "question"
+                ],
+                "title": "RAGQueryRequest"
+            },
+            "RAGQueryResponse": {
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Job Id"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "default": "RAG query submitted"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "job_id"
+                ],
+                "title": "RAGQueryResponse",
+                "description": "Returned immediately \u2014 contains the job ID for status polling."
+            },
+            "RAGQuerySyncResponse": {
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "title": "Question"
+                    },
+                    "answer": {
+                        "type": "string",
+                        "title": "Answer"
+                    },
+                    "sources": {
+                        "items": {
+                            "$ref": "#/components/schemas/RAGSourceResponse"
+                        },
+                        "type": "array",
+                        "title": "Sources"
+                    },
+                    "chunks_retrieved": {
+                        "type": "integer",
+                        "title": "Chunks Retrieved"
+                    },
+                    "top_k_requested": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Top K Requested"
+                    },
+                    "model": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Model"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "question",
+                    "answer",
+                    "sources",
+                    "chunks_retrieved"
+                ],
+                "title": "RAGQuerySyncResponse"
+            },
+            "RAGSourceResponse": {
+                "properties": {
+                    "chunk_id": {
+                        "type": "string",
+                        "title": "Chunk Id"
+                    },
+                    "document_id": {
+                        "type": "string",
+                        "title": "Document Id"
+                    },
+                    "document_title": {
+                        "type": "string",
+                        "title": "Document Title"
+                    },
+                    "chunk_index": {
+                        "type": "integer",
+                        "title": "Chunk Index"
+                    },
+                    "similarity": {
+                        "type": "number",
+                        "title": "Similarity"
+                    },
+                    "text_preview": {
+                        "type": "string",
+                        "title": "Text Preview"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "chunk_id",
+                    "document_id",
+                    "document_title",
+                    "chunk_index",
+                    "similarity",
+                    "text_preview"
+                ],
+                "title": "RAGSourceResponse"
             },
             "TopKJobResponse": {
                 "properties": {
@@ -1229,5 +1839,15 @@
                 "title": "WorkerStatus"
             }
         }
-    }
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8000",
+            "description": "Docker Compose / local uvicorn"
+        },
+        {
+            "url": "http://localhost:30080",
+            "description": "Kubernetes NodePort (Stage 12)"
+        }
+    ]
 }

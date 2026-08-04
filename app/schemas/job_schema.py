@@ -27,6 +27,9 @@ class JobCreate(BaseModel):
             JobType.OCR: self._validate_ocr,
             JobType.TRANSCRIPTION: self._validate_transcription,
             JobType.RECOMMENDATIONS: self._validate_recommendations,
+            # Stage 13: new validators
+            JobType.INGESTION: self._validate_ingestion,
+            JobType.RAG_QUERY: self._validate_rag_query,
         }
 
         validator = validators.get(self.job_type)
@@ -107,6 +110,18 @@ class JobCreate(BaseModel):
             UUID(value)
         except ValueError as exc:
             raise ValueError(f"'{field_name}' must be a valid UUID") from exc
+
+    
+    def _validate_ingestion(self):
+        doc_id = self.input.get("document_id")
+        if doc_id is None:
+            raise ValueError("Ingestion requires a 'document_id'")
+        self._validate_uuid_string(doc_id, "document_id")
+        
+    def _validate_rag_query(self):
+        question = self.input.get("question")
+        if not question or not isinstance(question, str) or not question.strip():
+            raise ValueError("RAG query requires a non-empty 'question' field")
 
 
 class JobResponse(BaseModel):

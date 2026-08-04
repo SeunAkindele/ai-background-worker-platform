@@ -38,7 +38,7 @@ services:
   # Infrastructure
   # ============================================================
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: ai_worker_postgres
     restart: unless-stopped
     environment:
@@ -49,6 +49,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ai_worker_platform"]
       interval: 5s
@@ -176,6 +177,31 @@ services:
       <<: *worker-env
       WORKER_TYPE: recommendations
 
+  worker-ingestion:
+    <<: *worker-common
+    container_name: ai_worker_ingestion
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      --pool=solo
+      --queues=ingestion
+      --hostname=ingestion@%h
+    environment:
+      <<: *worker-env
+      WORKER_TYPE: ingestion
+
+  worker-rag-query:
+    <<: *worker-common
+    container_name: ai_worker_rag_query
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      --pool=solo
+      --queues=rag_query
+      --hostname=rag_query@%h
+    environment:
+      <<: *worker-env
+      WORKER_TYPE: rag_query
 
 volumes:
   postgres_data:

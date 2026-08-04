@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.api.admin import router as admin_router
 from app.api.jobs import router as jobs_router
 from app.api.uploads import router as uploads_router
+from app.api.documents import documents_router, rag_router
 from app.core.database import async_engine, init_db
 
 
@@ -38,6 +39,8 @@ app = FastAPI(
 app.include_router(jobs_router)
 app.include_router(uploads_router)
 app.include_router(admin_router)
+app.include_router(documents_router)
+app.include_router(rag_router)
 
 
 @app.get("/health")

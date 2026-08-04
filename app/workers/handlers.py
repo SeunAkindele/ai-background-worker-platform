@@ -51,6 +51,14 @@ def _create_handler(job_type: JobType) -> BaseJobHandler:
         from app.workers.recommendation_worker import RecommendationHandler
         return RecommendationHandler()
 
+    elif job_type == JobType.INGESTION:
+        from app.workers.ingestion_worker import IngestionHandler
+        return IngestionHandler()
+
+    elif job_type == JobType.RAG_QUERY:
+        from app.workers.rag_query_worker import RAGQueryHandler
+        return RAGQueryHandler()
+
     raise ValueError(f"No handler registered for job type: {job_type}")
 
 

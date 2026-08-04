@@ -30,3 +30,9 @@ mutagen>=1.47.0
 
 # Transcription
 openai-whisper>=20231117
+
+# Vector store (pgvector)
+pgvector>=0.3.0
+
+# tiktoken for token-aware chunking (optional but better than word-split)
+tiktoken>=0.7.0
