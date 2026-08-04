@@ -29,6 +29,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.core.database import db_session
+from app.models.document import DocumentStatus
 from app.workers.base import BaseJobHandler
 
 
@@ -247,7 +248,7 @@ class RAGQueryHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             FROM chunk_embeddings ce
             JOIN chunks c ON c.id = ce.chunk_id
             JOIN documents d ON d.id = c.document_id
-            WHERE d.status = 'ready'
+            WHERE d.status = :doc_status
               AND 1 - (ce.embedding <=> :embedding) > :threshold
         """
 
@@ -264,11 +265,13 @@ class RAGQueryHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             LIMIT :top_k
         """
 
-        # Build bind parameters
+        # SQLAlchemy's default Postgres Enum stores member NAMES (READY),
+        # not values (ready). Raw SQL must match the DB label.
         params = {
             "embedding": str(query_embedding),
             "threshold": self._similarity_threshold,
             "top_k": top_k,
+            "doc_status": DocumentStatus.READY.name,
         }
         if document_ids:
             for i, doc_id in enumerate(document_ids):
