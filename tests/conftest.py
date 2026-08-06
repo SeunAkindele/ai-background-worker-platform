@@ -12,13 +12,13 @@ load_dotenv(ROOT / ".env.test", override=True)
 
 if not os.environ.get("DATABASE_URL"):
     raise RuntimeError(
-        "Tests require a .env.test file with DATABASE_URL. "
+        "DATABASE_URL is required for tests. "
         "Copy .env.test.example to .env.test and create the test database."
     )
 
 os.environ["APP_ENV"] = "test"
 
-import app.models  # noqa: F401 — register models
+import app.models  # noqa: F401
 from app.core.database import Base, SessionLocal, engine
 from app.core import queue as queue_module
 from app.main import app as fastapi_app

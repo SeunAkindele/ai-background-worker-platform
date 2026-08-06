@@ -1,9 +1,3 @@
-"""
-Real summarization worker — Stage 4.
-
-Implements text chunking with sliding window overlap
-and Hugging Face pipeline-based summarization.
-"""
 from typing import Any, Generator
 
 _pipeline = None
@@ -19,23 +13,9 @@ def summarize(
     _max_depth: int = 3,
 ) -> dict[str, Any]:
     """
-    Summarize text of any length using chunking + recursive merge.
+    Summarize text using chunking and recursive merge for long inputs.
 
-    1. If text is short enough, summarize directly.
-    2. Otherwise, chunk it, summarize each chunk, merge the summaries.
-    3. If merged summary is still too long, recurse (up to _max_depth).
-
-    Args:
-        text: The input text to summarize.
-        chunk_size: Max words per chunk for the sliding window.
-        overlap: Overlapping words between chunks.
-        max_length: Max tokens in each chunk's summary output.
-        min_length: Min tokens in each chunk's summary output.
-        _depth: Current recursion depth (internal use).
-        _max_depth: Maximum recursion depth to prevent infinite loops.
-
-    Returns:
-        Dict with summary, chunks_processed, original_word_count, summary_word_count.
+    Returns summary, chunks_processed, original_word_count, and summary_word_count.
     """
     original_word_count = len(text.split())
     chunks_processed = 0
@@ -89,22 +69,7 @@ def chunk_text(
     chunk_size: int = 500,
     overlap: int = 50,
 ) -> Generator[str, None, None]:
-    """
-    Split text into overlapping word-based chunks using a sliding window.
-
-    Yields one chunk at a time (generator — lazy evaluation, memory-efficient).
-
-    Args:
-        text: The input text to chunk.
-        chunk_size: Maximum number of words per chunk.
-        overlap: Number of overlapping words between consecutive chunks.
-
-    Yields:
-        A string chunk of at most chunk_size words.
-
-    Raises:
-        ValueError: If overlap >= chunk_size (step would be zero or negative).
-    """
+    """Yield overlapping word chunks via a sliding window."""
     if overlap >= chunk_size:
         raise ValueError(
             f"overlap ({overlap}) must be less than chunk_size ({chunk_size})"
@@ -135,20 +100,14 @@ def chunk_text(
 
 
 def summarize_chunk(text: str, max_length: int = 150, min_length: int = 40) -> str:
-    """Summarize a single chunk of text using the Hugging Face pipeline."""
+    """Summarize a single chunk with the Hugging Face pipeline."""
     pipe = get_summarization_pipeline()
     result = pipe(text, max_length=max_length, min_length=min_length, do_sample=False)
     return result[0]["summary_text"]
 
 
 def get_summarization_pipeline():
-    """
-    Lazy-loading singleton for the summarization model.
-
-    First call downloads/loads the model (~1.6GB, takes a while).
-    Subsequent calls return the cached pipeline instantly.
-    Uses safetensors weights (no torch.load — works on torch < 2.6).
-    """
+    """Return a cached summarization pipeline, loading the model on first use."""
     global _pipeline
     if _pipeline is None:
         from transformers import pipeline

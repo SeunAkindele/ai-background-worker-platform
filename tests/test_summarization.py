@@ -6,9 +6,6 @@ import pytest
 from app.workers.summarization_worker import chunk_text, summarize
 
 
-# --- chunk_text tests ---
-
-
 class TestChunkText:
     def test_returns_generator(self):
         result = chunk_text("some words here")
@@ -71,9 +68,6 @@ class TestChunkText:
     def test_overlap_exceeds_chunk_size_raises(self):
         with pytest.raises(ValueError, match="overlap.*must be less than chunk_size"):
             list(chunk_text("hello world", chunk_size=5, overlap=10))
-
-
-# --- summarize tests (model mocked) ---
 
 
 class TestSummarize:

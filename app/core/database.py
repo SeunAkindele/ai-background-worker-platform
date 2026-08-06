@@ -15,7 +15,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def get_db():
-    """FastAPI dependency — yields a DB session, closes after request."""
+    """Yield a request-scoped database session."""
     db = SessionLocal()
     try:
         yield db
@@ -25,10 +25,7 @@ def get_db():
 
 @contextmanager
 def db_session():
-    """
-    Context manager for worker / scripts.
-    Commits on success, rolls back on error, always closes.
-    """
+    """Yield a session that commits on success and rolls back on error."""
     db = SessionLocal()
     try:
         yield db
@@ -42,4 +39,5 @@ def db_session():
 
 def init_db():
     import app.models
+
     Base.metadata.create_all(bind=engine)
