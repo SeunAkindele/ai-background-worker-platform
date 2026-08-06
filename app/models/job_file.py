@@ -10,20 +10,13 @@ from app.core.database import Base
 
 
 class FilePurpose(str, enum.Enum):
-    """What the uploaded file will be used for."""
     OCR = "ocr"
     TRANSCRIPTION = "transcription"
 
 
 class JobFile(Base):
-    """
-    Metadata for an uploaded file stored on disk.
+    """Metadata for an uploaded file stored on disk."""
 
-    DSA Focus:
-    ----------
-    content_hash is the deduplication key — a hash map from SHA-256 → file record.
-    Two uploads of the same bytes → same hash → one stored file, two references.
-    """
     __tablename__ = "job_files"
 
     id: Mapped[uuid.UUID] = mapped_column(

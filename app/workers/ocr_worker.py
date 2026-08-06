@@ -1,6 +1,4 @@
-"""
-OCR Worker — Stage 6 + Stage 9 file uploads.
-"""
+"""OCR worker — extract text from images, base64 batches, or uploaded files."""
 from pathlib import Path
 from typing import Any, Generator
 

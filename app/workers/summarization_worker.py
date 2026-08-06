@@ -1,8 +1,4 @@
-"""
-Summarization Worker — Stage 4 logic, now conforming to Stage 6 BaseJobHandler.
-
-DSA Focus: Chunking with sliding window, recursive merge.
-"""
+"""Summarization worker — chunked BART summarization with recursive merge."""
 from typing import Any, Generator
 
 from app.workers.base import BaseJobHandler
@@ -59,7 +55,7 @@ class SummarizationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
         merged = " ".join(chunk_summaries)
 
-        # _summarize recursively calls itself if condition is met (word count is greater than chunk size and depth is less than max depth)
+        # Recurse when the merged summary is still too long
         if len(merged.split()) > self._chunk_size and depth < self._max_depth:
             recursive_result = self._summarize(merged, depth + 1)
             return {
@@ -77,7 +73,7 @@ class SummarizationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         }
 
     def _chunk_text(self, text: str) -> Generator[str, None, None]:
-        """Sliding window chunking — DSA: O(n) single pass over words."""
+        """Yield overlapping word windows for long inputs."""
         words = text.split()
         if not words:
             return
@@ -106,7 +102,7 @@ class SummarizationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
 
 def _get_pipeline():
-    """Lazy singleton — model loads once per process, stays in memory."""
+    """Lazy-load the summarization model once per process."""
     global _pipeline
     if _pipeline is None:
         from transformers import pipeline
