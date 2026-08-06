@@ -17,11 +17,10 @@ class JobService:
         self, db: AsyncSession, payload: JobCreate
     ) -> JobResponse:
         """
-        Create a job asynchronously.
+        Create a job and enqueue it.
 
-        Stage 9 addition:
-        If input contains file_id, resolve it to an absolute file_path
-        on disk and link the JobFile row to this job.
+        When input includes file_id, resolve it to a disk path and link
+        the JobFile row to the new job.
         """
         input_payload = dict(payload.input)
         file_id_raw = input_payload.get("file_id")

@@ -1,7 +1,4 @@
 services:
-  # ============================================================
-  # Infrastructure services (already had these)
-  # ============================================================
   postgres:
     image: postgres:16-alpine
     container_name: ai_worker_postgres
@@ -32,20 +29,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # ============================================================
-  # Application services (NEW in Stage 10)
-  # ============================================================
-
-  # --- API Server ---
-  # System Design:
-  # The API is the only public-facing service. It receives HTTP
-  # requests, validates them, writes to Postgres, and pushes
-  # jobs onto the Redis queue. It does NOT process jobs itself.
-  #
-  # depends_on with condition: service_healthy means Docker will
-  # wait until Postgres and Redis pass their health checks before
-  # starting the API. Without this, the API would crash on startup
-  # trying to connect to a database that isn't ready yet.
   api:
     build: .
     container_name: ai_worker_api
@@ -53,22 +36,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Notice: "postgres" and "redis" here are Docker service names,
-      # NOT localhost. Docker Compose creates a network and each service
-      # gets a DNS entry matching its service name.
-      #
-      # Python Internals:
-      # pydantic-settings reads these env vars. Because we set them here,
-      # they override anything in .env. The Settings class in config.py
-      # checks env vars first, then falls back to .env file.
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_worker_platform
       REDIS_URL: redis://redis:6379/0
       APP_ENV: development
       UPLOAD_DIR: /app/uploads
     volumes:
-      # Shared volume so API can save uploads and workers can read them.
-      # Without this, a file uploaded via the API would exist only inside
-      # the api container — the worker container couldn't see it.
       - upload_data:/app/uploads
     depends_on:
       postgres:
@@ -76,23 +48,6 @@ services:
       redis:
         condition: service_healthy
 
-  # --- Celery Worker (all job types in one container for now) ---
-  # System Design:
-  # The worker is the SAME Docker image as the API (same Dockerfile),
-  # but with a different CMD. This is a common pattern:
-  # one image, multiple roles, differentiated by the entrypoint.
-  #
-  # In Stage 11, you'll split this into separate worker images.
-  # For now, one worker handles all job types.
-  #
-  # Why --pool=solo?
-  # On macOS/Docker, the default prefork pool can have issues.
-  # Solo runs one task at a time in the main process — simpler
-  # to debug. In production you'd use --pool=prefork --concurrency=4.
-  #
-  # Why --queues=high,normal,low?
-  # Matches the priority queues defined in celery_app.py.
-  # The worker drains "high" before "normal" before "low".
   worker:
     build: .
     container_name: ai_worker_worker

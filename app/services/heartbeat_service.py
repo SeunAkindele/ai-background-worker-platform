@@ -26,14 +26,9 @@ class HeartbeatService:
         update_status: bool = True,
     ) -> WorkerHeartbeat:
         """
-        Shared upsert logic for beat() and pulse().
+        Upsert a heartbeat row for beat() or pulse().
 
-        DSA: This is a hash map "put" operation conceptually.
-        worker_name is the key, the heartbeat row is the value.
-        The unique index on worker_name gives O(log n) lookup.
-
-        update_type=False  → preserve existing worker_type (used by pulse)
-        update_status=False → preserve existing status + current_job_id (used by pulse)
+        With update_type/update_status False, preserve existing fields (pulse).
         """
         existing = (
             db.query(WorkerHeartbeat)
@@ -136,11 +131,8 @@ class HeartbeatService:
 
     def mark_stale_workers_offline(self, db: Session) -> int:
         """
-        Any worker that hasn't sent a heartbeat within HEARTBEAT_TIMEOUT
-        is considered offline. Returns count of workers marked offline.
-
-        DSA: This is a sliding window check — we look at a fixed time window
-        (now - timeout) and mark everything outside it as stale.
+        Mark workers offline if they have not heartbeated within HEARTBEAT_TIMEOUT.
+        Returns the number of workers marked offline.
         """
         cutoff = datetime.now(timezone.utc) - HEARTBEAT_TIMEOUT
         stale_workers = (
@@ -161,12 +153,7 @@ class HeartbeatService:
         return len(stale_workers)
 
     async def async_mark_stale_workers_offline(self, db: AsyncSession) -> int:
-        """
-        Async version of mark_stale_workers_offline for FastAPI routes.
-
-        Same sliding window staleness check — any worker that hasn't pinged
-        within HEARTBEAT_TIMEOUT is marked OFFLINE.
-        """
+        """Async variant of mark_stale_workers_offline for API routes."""
         cutoff = datetime.now(timezone.utc) - HEARTBEAT_TIMEOUT
         stmt = select(WorkerHeartbeat).where(
             WorkerHeartbeat.last_seen_at < cutoff,

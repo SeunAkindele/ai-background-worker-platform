@@ -2,7 +2,7 @@
 
 Base URL: `http://localhost:8000`
 
-> **Stage 10 (Docker):** With `docker compose up`, the API is published on host port `8000` — the same base URL works. No new HTTP endpoints were added in Stage 10; this guide is unchanged for request/response shapes.
+> With `docker compose up`, the API is published on host port `8000` — the same base URL works for all examples below.
 
 ---
 
@@ -221,7 +221,7 @@ Content-Type: application/json
 }
 ```
 
-### 3c. File Upload (recommended — Stage 9)
+### 3c. File Upload (recommended)
 
 **Step 1 — Upload the file:**
 
@@ -399,7 +399,7 @@ Content-Type: application/json
 }
 ```
 
-### 4d. File Upload + Whisper (Stage 9)
+### 4d. File Upload + Whisper
 
 **Step 1 — Upload audio/video:**
 
@@ -588,7 +588,7 @@ Content-Type: application/json
 
 ---
 
-## 6. File Upload Endpoints (Stage 9)
+## 6. File Upload Endpoints
 
 ### Upload a file
 
@@ -886,7 +886,7 @@ All `POST /jobs` requests accept an optional `priority` field:
 
 ---
 
-## 10. Rate Limiting (Stage 8)
+## 10. Rate Limiting
 
 All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
 
