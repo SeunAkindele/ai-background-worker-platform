@@ -1,19 +1,3 @@
-"""
-Recommendation Worker — Stage 6.
-
-DSA Focus:
-----------
-- Graphs: user-item interactions as an adjacency list
-- Collaborative Filtering: find similar users, recommend their items
-- Heaps: efficiently get Top-K recommendations
-- Hash Maps: fast lookups for user history and item scores
-
-Python Internals Focus:
------------------------
-- defaultdict for graph construction
-- heapq.nlargest for Top-K (O(n log k) — better than sorting when k << n)
-- set operations for filtering already-seen items
-"""
 import heapq
 from collections import defaultdict
 from typing import Any
@@ -22,15 +6,7 @@ from app.workers.base import BaseJobHandler
 
 
 class RecommendationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
-    """
-    Graph-based collaborative filtering recommendation engine.
-
-    Architecture:
-    - Build a bipartite graph: users ↔ items
-    - Find similar users (shared items)
-    - Score unseen items based on similar users' preferences
-    - Return Top-K using a heap
-    """
+    """Collaborative filtering recommendations over a user–item interaction graph."""
 
     def validate_input(self, input_payload: dict[str, Any]) -> None:
         user_id = input_payload.get("user_id")
@@ -57,18 +33,6 @@ class RecommendationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                 )
 
     def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
-        """
-        DSA: Graph-based Collaborative Filtering.
-
-        Steps:
-        1. Build bipartite graph (users → items, items → users)  — O(E)
-        2. Find target user's items — O(1) hash map lookup
-        3. Find similar users (share items with target) — O(degree * degree)
-        4. Score candidate items from similar users — O(similar_users * their_items)
-        5. Get Top-K using heap — O(n log k)
-
-        Where E = total interactions, k = number of recommendations desired.
-        """
         user_id = input_payload["user_id"]
         interactions = input_payload["interactions"]
         top_k = input_payload.get("top_k", 10)
@@ -112,20 +76,6 @@ class RecommendationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         dict[str, set[str]],
         dict[str, dict[str, float]],
     ]:
-        """
-        DSA: Build adjacency list representation of bipartite graph.
-
-        Graph structure:
-        - user_to_items: {user_id: {item_a, item_b, ...}}  (adjacency list)
-        - item_to_users: {item_id: {user_x, user_y, ...}}  (reverse index)
-        - user_ratings:  {user_id: {item_id: rating}}       (edge weights)
-
-        Time: O(E) where E = number of interactions
-        Space: O(E) for the adjacency lists
-
-        Using defaultdict: Python creates the default value (set/dict)
-        automatically on first access — no KeyError checks needed.
-        """
         user_to_items: dict[str, set[str]] = defaultdict(set)
         item_to_users: dict[str, set[str]] = defaultdict(set)
         user_ratings: dict[str, dict[str, float]] = defaultdict(dict)
@@ -147,17 +97,6 @@ class RecommendationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         target_items: set[str],
         item_to_users: dict[str, set[str]],
     ) -> dict[str, float]:
-        """
-        DSA: Find similar users via shared items (Jaccard-like scoring).
-
-        For each item the target user interacted with:
-          - Look up all other users who interacted with that item
-          - Each shared item increases that user's similarity score
-
-        Final similarity = shared_items / union_of_items (Jaccard index)
-
-        Time: O(|target_items| * avg_users_per_item)
-        """
         similarity_scores: dict[str, int] = defaultdict(int)
 
         for item in target_items:
@@ -180,18 +119,6 @@ class RecommendationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         user_to_items: dict[str, set[str]],
         user_ratings: dict[str, dict[str, float]],
     ) -> dict[str, float]:
-        """
-        DSA: Weighted scoring of candidate items.
-
-        For each similar user:
-          - Look at items they liked that target user hasn't seen
-          - Score = similarity_weight * their_rating
-
-        Accumulate scores in a hash map: O(1) per update.
-
-        This is the core of collaborative filtering:
-        "Users similar to you liked X, so you might like X too."
-        """
         item_scores: dict[str, float] = defaultdict(float)
 
         for other_user, similarity in similar_users.items():
@@ -208,20 +135,6 @@ class RecommendationHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def _top_k_by_heap(
         scored_items: dict[str, float], k: int
     ) -> list[dict[str, Any]]:
-        """
-        DSA: Top-K elements using a heap.
-
-        heapq.nlargest uses a min-heap of size k internally:
-        - Push first k elements onto heap
-        - For each remaining element: if larger than heap min, replace
-        - Result: k largest elements
-
-        Time: O(n log k) — better than O(n log n) full sort when k << n
-        Space: O(k) for the heap
-
-        Example: 1 million items, top 10 → O(n log 10) vs O(n log n)
-        That's roughly 3x fewer comparisons.
-        """
         if not scored_items:
             return []
 

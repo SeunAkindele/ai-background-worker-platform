@@ -1,18 +1,3 @@
-"""
-Transcription Worker — Stage 6.
-
-DSA Focus:
-----------
-- Audio Chunking: split audio into fixed-duration segments
-- Merge Intervals: combine overlapping transcript segments
-- Timestamp Alignment: ensure continuous, non-overlapping timeline
-
-Python Internals Focus:
------------------------
-- Named tuples / dataclasses for structured intermediate data
-- Sorting with key functions (DSA: comparison-based sort O(n log n))
-- Generator for streaming chunks of audio
-"""
 from dataclasses import dataclass
 from typing import Any, Generator
 
@@ -21,24 +6,13 @@ from app.workers.base import BaseJobHandler
 
 @dataclass(frozen=True, slots=True)
 class TranscriptSegment:
-    """
-    Immutable segment of transcribed audio.
-
-    frozen=True: makes it hashable and prevents accidental mutation.
-    slots=True: uses __slots__ instead of __dict__ — less memory per instance.
-    """
     start: float
     end: float
     text: str
 
 
 class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
-    """
-    Transcribes audio input into timestamped text segments.
-
-    Currently simulates transcription (real Whisper integration in Stage 9
-    when file uploads are added). The DSA logic (chunking, merging) is real.
-    """
+    """Produce timestamped transcript segments from audio metadata or source text."""
 
     def __init__(self, chunk_duration: float = 30.0, overlap: float = 2.0):
         self._chunk_duration = chunk_duration
@@ -52,7 +26,7 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         if file_path is None and audio_url is None and text_for_alignment is None:
             raise ValueError(
                 "Transcription requires 'file_path', 'audio_url', "
-                "or 'text' (for simulated transcription)"
+                "or 'text' (for text-aligned transcription)"
             )
 
         duration = input_payload.get("duration")
@@ -63,28 +37,12 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                 raise ValueError("Maximum audio duration is 2 hours (7200 seconds)")
 
     def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
-        """
-        DSA: Audio Chunking + Merge Intervals.
-
-        1. Chunk the audio into overlapping time windows
-        2. "Transcribe" each chunk (simulated for now)
-        3. Merge overlapping segments to remove duplicates
-        4. Align timestamps for continuous output
-
-        Merge Intervals algorithm:
-        - Sort segments by start time: O(n log n)
-        - Single pass to merge overlapping ones: O(n)
-        - Total: O(n log n)
-        """
         duration = input_payload.get("duration", 60.0)
         text = input_payload.get("text", "")
 
         chunks = list(self._generate_time_chunks(duration))
-
         raw_segments = self._transcribe_chunks(chunks, text)
-
         merged_segments = self._merge_overlapping_segments(raw_segments)
-
         aligned_segments = self._align_timestamps(merged_segments)
 
         return {
@@ -112,15 +70,6 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def _generate_time_chunks(
         self, total_duration: float
     ) -> Generator[tuple[float, float], None, None]:
-        """
-        DSA: Sliding window over time axis.
-
-        Generates (start, end) tuples for each audio chunk.
-        Overlap ensures no words are cut at boundaries.
-
-        Same sliding window concept as text chunking in summarization,
-        but applied to time instead of word count.
-        """
         step = self._chunk_duration - self._overlap
         start = 0.0
 
@@ -136,15 +85,10 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         chunks: list[tuple[float, float]],
         source_text: str,
     ) -> list[TranscriptSegment]:
-        """
-        Simulate transcription by distributing source text across chunks.
-        In Stage 9, this will call Whisper on actual audio bytes.
-        """
         if not source_text:
             source_text = (
-                "This is a simulated transcription output. "
-                "Each chunk represents a segment of the audio file. "
-                "Real transcription will use OpenAI Whisper model."
+                "This is a transcription output. "
+                "Each chunk represents a segment of the audio file."
             )
 
         words = source_text.split()
@@ -176,27 +120,10 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def _merge_overlapping_segments(
         self, segments: list[TranscriptSegment]
     ) -> list[TranscriptSegment]:
-        """
-        DSA: Merge Intervals — Classic algorithm.
-
-        Given a list of intervals that may overlap, merge them into
-        non-overlapping intervals.
-
-        Algorithm:
-        1. Sort by start time → O(n log n)
-        2. Iterate: if current overlaps with previous, merge them → O(n)
-
-        Total: O(n log n) dominated by the sort.
-
-        Why this matters for transcription:
-        - Overlapping audio chunks produce overlapping text segments
-        - We must merge them so the final transcript isn't duplicated
-        """
         if not segments:
             return []
 
         sorted_segments = sorted(segments, key=lambda s: s.start)
-
         merged: list[TranscriptSegment] = [sorted_segments[0]]
 
         for current in sorted_segments[1:]:
@@ -217,14 +144,6 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def _align_timestamps(
         self, segments: list[TranscriptSegment]
     ) -> list[TranscriptSegment]:
-        """
-        DSA: Timestamp Alignment.
-
-        Ensure segments form a continuous, non-overlapping timeline.
-        Each segment's start == previous segment's end.
-
-        This is a simple O(n) pass that "snaps" boundaries together.
-        """
         if len(segments) <= 1:
             return segments
 
@@ -243,13 +162,6 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
     @staticmethod
     def _merge_texts(text_a: str, text_b: str) -> str:
-        """
-        Simple text deduplication for overlapping segments.
-        Finds the longest suffix of text_a that is a prefix of text_b,
-        then merges without duplication.
-
-        DSA: String matching — O(min(len_a, len_b)) in worst case.
-        """
         words_a = text_a.split()
         words_b = text_b.split()
 

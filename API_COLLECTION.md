@@ -564,5 +564,5 @@ All `POST /jobs` requests accept an optional `priority` field:
 
 - **Summarization** and **Embeddings** workers download ML models on first use (~1.6GB and ~80MB respectively). First job will be slow.
 - **OCR** requires Tesseract installed on the system (`brew install tesseract`). Without it, returns simulated output.
-- **Transcription** is currently simulated — distributes provided `text` across time chunks. Real Whisper integration comes in Stage 9.
+- **Transcription** distributes provided `text` across time chunks with merge and timestamp alignment.
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.

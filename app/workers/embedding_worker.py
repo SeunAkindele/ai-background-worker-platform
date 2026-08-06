@@ -1,18 +1,3 @@
-"""
-Embedding Worker — Stage 6.
-
-DSA Focus:
-----------
-- Vectors: text → fixed-dimension float array
-- Cosine Similarity: measure angle between two vectors
-- Nearest Neighbor Search: find most similar item from a set (brute-force O(n))
-
-Python Internals Focus:
------------------------
-- typing.Protocol could replace ABC here (structural subtyping)
-- List comprehension vs generator for memory trade-off
-- math.sqrt vs numpy — understanding C-extension performance
-"""
 import math
 from typing import Any
 
@@ -20,19 +5,16 @@ from app.workers.base import BaseJobHandler
 
 
 class EmbeddingHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
-    """
-    Generates text embeddings using sentence-transformers.
-    Optionally computes cosine similarity between two texts.
-    """
+    """Generate text embeddings and optional similarity / nearest-neighbor results."""
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         self._model_name = model_name
         self._model = None
 
     def _get_model(self):
-        """Lazy-load the sentence-transformer model (one per process)."""
         if self._model is None:
             from sentence_transformers import SentenceTransformer
+
             self._model = SentenceTransformer(self._model_name, device="cpu")
         return self._model
 
@@ -58,12 +40,6 @@ class EmbeddingHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                 raise ValueError("Batch size limited to 100 texts")
 
     def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
-        """
-        DSA: Vector operations.
-        - Encoding produces a dense float vector per text.
-        - If 'compare_to' is provided, compute cosine similarity (DSA concept).
-        - If 'find_nearest' is provided, do brute-force nearest neighbor search.
-        """
         model = self._get_model()
 
         text = input_payload.get("text")
@@ -118,18 +94,6 @@ class EmbeddingHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
     @staticmethod
     def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
-        """
-        DSA: Cosine Similarity.
-
-        cos(θ) = (A · B) / (||A|| * ||B||)
-
-        - Dot product: O(n) where n = dimensions
-        - Magnitude: O(n)
-        - Total: O(n)
-
-        Values range from -1 (opposite) to 1 (identical).
-        For normalized embeddings, this equals dot product alone.
-        """
         dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
         magnitude_a = math.sqrt(sum(a * a for a in vec_a))
         magnitude_b = math.sqrt(sum(b * b for b in vec_b))
@@ -143,16 +107,6 @@ class EmbeddingHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def _find_nearest(
         query: list[float], candidates: list[list[float]]
     ) -> tuple[int, float]:
-        """
-        DSA: Brute-force Nearest Neighbor Search.
-
-        Compare query against every candidate — O(n * d) where:
-        - n = number of candidates
-        - d = dimensions per vector
-
-        In production, you'd use approximate methods (FAISS, Annoy, HNSW).
-        This brute-force version teaches the baseline that those optimize.
-        """
         best_idx = 0
         best_score = -1.0
 
