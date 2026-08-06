@@ -26,17 +26,11 @@ MAX_BACKOFF_SECONDS = 300
 
 def _heartbeat_loop(worker_name: str, worker_type: str) -> None:
     """
-    Periodic heartbeat that runs in a daemon thread alongside the Celery worker.
-    Stage 11 change:
-    The loop now receives worker_type and does an initial beat() call
-    to register the correct type BEFORE entering the pulse loop.
-    Previously, the first heartbeat row was created by pulse() with
-    worker_type="general" (the default). It only got the correct type
-    after the first job was processed (when tasks.py called beat()).
-    With split workers, we know the type at startup from the WORKER_TYPE
-    env var, so we register it immediately.
+    Periodic heartbeat thread for a Celery worker process.
+
+    Registers the worker with the correct worker_type on startup, then
+    pulses last_seen_at on an interval.
     """
-    # Initial registration with correct worker_type and ONLINE status.
     try:
         with db_session() as db:
             heartbeat_service.beat(

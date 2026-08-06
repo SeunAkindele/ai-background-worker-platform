@@ -18,8 +18,6 @@ spec:
           type: Utilization
           averageUtilization: 70
 ---
-# Summarization + transcription are ML-heavy (~2Gi); scale on memory.
-# OCR is CPU-bound; scale on CPU.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

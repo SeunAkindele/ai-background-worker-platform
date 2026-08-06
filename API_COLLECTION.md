@@ -2,9 +2,9 @@
 
 Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` (Kubernetes NodePort) or `http://localhost:8000` after `kubectl port-forward svc/api 8000:8000`
 
-> **Stage 12 (Kubernetes):** The same HTTP API runs on Kubernetes. Deploy with `kubectl apply -k infra/kubernetes/`. Five worker Deployments consume one queue each; the API Service exposes NodePort `30080`. Kubernetes probes hit `GET /ready`. Request/response shapes are unchanged from Stage 11 except for the new `/ready` endpoint.
+> **Kubernetes:** Deploy with `kubectl apply -k infra/kubernetes/`. Five worker Deployments consume one queue each; the API Service exposes NodePort `30080`. Probes use `GET /ready`.
 >
-> **Stage 11 (split workers):** With `docker compose up`, five Celery workers run (one per job type) from the **same image**. Jobs are routed to a Redis queue named after `job_type`; `priority` still controls ordering inside that queue (Celery integers 0 / 5 / 9).
+> **Compose:** With `docker compose up`, five Celery workers run (one per job type) from the same image. Jobs are routed to a Redis queue named after `job_type`; `priority` orders work inside that queue (Celery integers 0 / 5 / 9).
 
 ---
 
@@ -20,7 +20,7 @@ Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` 
 | `POST` | `/uploads/job` | Upload + create OCR/transcription job (one-shot) |
 | `GET` | `/uploads/{file_id}` | Upload metadata by file UUID |
 | `GET` | `/health` | Health check (per-type queue sizes) |
-| `GET` | `/ready` | Readiness probe (Kubernetes; Stage 12) |
+| `GET` | `/ready` | Readiness probe (Kubernetes) |
 | `GET` | `/admin/dashboard` | Full system overview (jobs, workers, queues) |
 | `GET` | `/admin/jobs/{job_id}/logs` | Audit trail / logs for a specific job |
 | `GET` | `/admin/errors` | Recent error logs across all jobs |
@@ -224,7 +224,7 @@ Content-Type: application/json
 }
 ```
 
-### 3c. File Upload (recommended — Stage 9)
+### 3c. File Upload (recommended)
 
 **Step 1 — Upload the file:**
 
@@ -402,7 +402,7 @@ Content-Type: application/json
 }
 ```
 
-### 4d. File Upload + Whisper (Stage 9)
+### 4d. File Upload + Whisper
 
 **Step 1 — Upload audio/video:**
 
@@ -591,7 +591,7 @@ Content-Type: application/json
 
 ---
 
-## 6. File Upload Endpoints (Stage 9)
+## 6. File Upload Endpoints
 
 ### Upload a file
 
@@ -679,7 +679,7 @@ GET /jobs?skip=0&limit=10
 
 ## 9. Health & Admin
 
-### Readiness Check (Stage 12)
+### Readiness Check
 
 ```
 GET /ready
@@ -712,7 +712,7 @@ curl http://localhost:8000/ready
 GET /health
 ```
 
-**Response (Stage 11):**
+**Response:**
 
 ```json
 {
@@ -852,7 +852,7 @@ GET /admin/slowest-jobs?k=10
 GET /admin/workers
 ```
 
-With Stage 11 Compose or Stage 12 Kubernetes you typically see **five** workers (one per type), each with `worker_type` set from `WORKER_TYPE`.
+With Compose or Kubernetes you typically see **five** workers (one per type), each with `worker_type` set from `WORKER_TYPE`.
 
 **Response:**
 
@@ -940,11 +940,11 @@ All `POST /jobs` requests accept an optional `priority` field:
 | `"normal"` | `5` | Default |
 | `"low"` | `9` | Processed last within that job-type queue |
 
-**Routing (Stage 11):** queue name = `job_type` (e.g. `ocr`). Priority does **not** choose a separate `high`/`normal`/`low` queue anymore.
+**Routing:** queue name = `job_type` (e.g. `ocr`). Priority orders work inside that queue; it does not select a separate `high`/`normal`/`low` queue.
 
 ---
 
-## 10. Rate Limiting (Stage 8)
+## 10. Rate Limiting
 
 All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
 
@@ -1005,8 +1005,8 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 ## Notes
 
-- **Stage 12 (Kubernetes):** Run `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. OCR/transcription workers mount the uploads PVC; summarization/embeddings/recommendations do not. Scale a worker type: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
-- **Stage 11 workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, etc. Check `docker compose logs worker-<type>` (Compose) or `kubectl logs -l worker-type=<type>` (K8s) if a job stays `pending`.
+- **Kubernetes:** Run `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. OCR/transcription workers mount the uploads PVC; summarization/embeddings/recommendations do not. Scale a worker type: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
+- **Workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, etc. Check `docker compose logs worker-<type>` (Compose) or `kubectl logs -l worker-type=<type>` (K8s) if a job stays `pending`.
 - **Summarization** and **Embeddings** download ML models on first use (~1.6GB and ~80MB). First job on that worker container is slow.
 - **OCR** requires Tesseract (installed in the Docker runtime image). Without it locally, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
 - **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (in Docker image) and `openai-whisper`. Model caches per container. Duration via mutagen; result includes `source.engine: "whisper"`.

@@ -15,7 +15,6 @@ spec:
     spec:
       containers:
         - name: api
-          # Build/load this image into your local cluster first (see run steps)
           image: ai-worker-platform:latest
           imagePullPolicy: IfNotPresent
           ports:
@@ -58,7 +57,7 @@ metadata:
   name: api
   namespace: ai-worker-platform
 spec:
-  type: NodePort          # easy for Kind/Minikube; use LoadBalancer/Ingress later
+  type: NodePort
   selector:
     app: api
   ports:

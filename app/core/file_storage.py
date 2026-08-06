@@ -1,19 +1,4 @@
-"""
-File storage — streaming writes, chunked reads, SHA-256 hashing, deduplication.
-
-DSA Focus:
-----------
-- Streaming: process data in fixed-size chunks instead of loading entire file
-- Buffering: 8KB chunks balance syscalls vs memory
-- Hashing: SHA-256 computed incrementally while streaming (O(n) time, O(1) extra space)
-- Deduplication: hash map lookup — if hash exists, skip storing duplicate bytes
-
-Python Internals Focus:
------------------------
-- File objects are context managers (`with open(...) as f`)
-- `read(size)` returns bytes — immutable, so hasher.update(chunk) is safe
-- Generators: iter_file_chunks() yields chunks lazily for workers
-"""
+"""Local file storage with streaming writes, SHA-256 hashing, and deduplication."""
 import hashlib
 import mimetypes
 import shutil
@@ -80,8 +65,8 @@ class FileStorage:
         self, content_type: str | None, filename: str, purpose: FilePurpose
     ) -> str:
         """
-        Resolve and validate MIME type against purpose allowlist.
-        Falls back to mimetypes.guess_type() if browser sends generic type.
+        Resolve and validate MIME type against the purpose allowlist.
+        Falls back to mimetypes.guess_type() if the browser sends a generic type.
         """
         mime = content_type or ""
         if mime in ("application/octet-stream", ""):
@@ -102,13 +87,10 @@ class FileStorage:
         purpose: FilePurpose,
     ) -> tuple[str, str, int, str]:
         """
-        Stream upload to a temp file, hash while writing, then move to final path.
+        Stream an upload to disk, hash while writing, then store under a content-addressed path.
 
         Returns:
             (stored_path, content_hash, file_size, file_type)
-
-        DSA: Single pass O(n) where n = file size.
-        Memory usage: O(chunk_size) — constant regardless of file size.
         """
         filename = upload_file.filename or "unnamed"
         file_type = self.validate_mime_type(
@@ -158,10 +140,7 @@ class FileStorage:
         return stored_path, content_hash, total_size, file_type
 
     def _path_for_hash(self, content_hash: str, ext: str) -> Path:
-        """
-        Shard by first 2 hex chars of hash to avoid huge flat directories.
-        Example: uploads/ab/abcdef1234...pdf
-        """
+        """Shard by the first two hex chars of the hash to keep directories manageable."""
         prefix = content_hash[:2]
         return self.upload_dir / prefix / f"{content_hash}{ext}"
 
@@ -174,16 +153,7 @@ class FileStorage:
     def iter_file_chunks(
         path: Path, chunk_size: int | None = None
     ) -> Generator[bytes, None, None]:
-        """
-        Python Internals: Generator for memory-efficient file reads.
-
-        Worker can process large files without loading them entirely:
-            for chunk in iter_file_chunks(path):
-                process(chunk)
-
-        Yields immutable bytes objects — each chunk can be garbage-collected
-        after processing.
-        """
+        """Yield file contents in fixed-size chunks for streaming reads."""
         size = chunk_size or settings.upload_chunk_size
         with path.open("rb") as f:
             while True:
