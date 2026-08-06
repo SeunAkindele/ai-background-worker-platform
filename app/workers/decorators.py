@@ -10,11 +10,8 @@ R = TypeVar("R")
 
 
 def log_execution_time(func: Callable[P, R]) -> Callable[P, R]:
-    """
-    Decorator: logs how long a function took.
+    """Log wall-clock duration of the wrapped function."""
 
-    Python internals: closure — inner wrapper captures func, logger, time.
-    """
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         start = time.perf_counter()

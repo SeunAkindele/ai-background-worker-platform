@@ -6,10 +6,9 @@ from app.services.job_service import job_service
 from app.workers.celery_app import celery_app
 from app.workers.handlers import get_handler
 
-# failure #1 -> wait 10s, failure #2 -> wait 60s, failure #3 -> give up
 RETRY_BACKOFF = {0: 10, 1: 60}
 DEFAULT_BACKOFF = 60
-MAX_RETRIES = 2  # 2 retries = 3 total attempts
+MAX_RETRIES = 2
 
 
 def _backoff_seconds(retries: int) -> int:
@@ -18,18 +17,14 @@ def _backoff_seconds(retries: int) -> int:
 
 @celery_app.task(bind=True, name="process_job", max_retries=MAX_RETRIES, acks_late=True)
 def process_job(self, job_id: str) -> None:
-    """
-    job_id arrives as a STRING (JSON-serializable). Reconstruct the UUID here.
-    """
+    """Process a job by ID; retry with backoff on handler failure."""
     job_uuid = UUID(job_id)
 
     with db_session() as db:
         job = job_service.get_job(db, job_uuid)
         if job is None:
-            return  # nothing to do
+            return
 
-        # idempotency: terminal states are never re-processed,
-        # even if the broker redelivers (crash / visibility timeout).
         if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
             return
 
