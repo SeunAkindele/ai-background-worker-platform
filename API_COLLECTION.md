@@ -296,7 +296,7 @@ Content-Type: application/json
 }
 ```
 
-### 4c. Long Duration (many chunks, tests merge intervals)
+### 4c. Long Duration (many overlapping chunks)
 
 ```
 POST /jobs
@@ -310,7 +310,7 @@ Content-Type: application/json
   "job_type": "transcription",
   "priority": "low",
   "input": {
-    "text": "This is a longer transcription test that will generate many overlapping chunks which the merge intervals algorithm must combine into a clean non-overlapping timeline of transcript segments with aligned timestamps from start to finish without any gaps or duplicates in the final output",
+    "text": "This is a longer transcription test that will generate many overlapping chunks which must combine into a clean non-overlapping timeline of transcript segments with aligned timestamps from start to finish without any gaps or duplicates in the final output",
     "duration": 300
   }
 }
@@ -368,7 +368,7 @@ Content-Type: application/json
 }
 ```
 
-### 5b. Many Users (larger graph)
+### 5b. Many Users
 
 ```
 POST /jobs
@@ -690,7 +690,7 @@ All `POST /jobs` requests accept an optional `priority` field:
 
 ---
 
-## 9. Rate Limiting (Stage 8)
+## 9. Rate Limiting
 
 All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
 
@@ -753,7 +753,7 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 - **Summarization** and **Embeddings** workers download ML models on first use (~1.6GB and ~80MB respectively). First job will be slow.
 - **OCR** requires Tesseract installed on the system (`brew install tesseract`). Without it, returns simulated output.
-- **Transcription** is currently simulated — distributes provided `text` across time chunks. Real Whisper integration comes in Stage 9.
+- **Transcription** is currently simulated — distributes provided `text` across time chunks. Real Whisper integration is planned for audio file uploads.
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
 - **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
 - **Backpressure** — `POST /jobs` rejects with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).

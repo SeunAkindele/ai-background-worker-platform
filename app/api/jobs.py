@@ -18,25 +18,7 @@ async def create_job(
     _client: str = Depends(enforce_rate_limit),
     _pending: None = Depends(enforce_pending_limit),
 ):
-    """
-    Submit a new job.
-
-    Python Internals Focus:
-    -----------------------
-    This is now `async def` — it's a coroutine function.
-    When FastAPI receives a request, it calls this function which returns
-    a coroutine object. The event loop schedules it and starts executing
-    until the first `await` (inside async_create_job), at which point
-    it suspends and can handle other requests.
-
-    The Depends() parameters create a dependency chain:
-    1. get_async_db → opens DB session
-    2. enforce_rate_limit → checks sliding window counter
-    3. enforce_pending_limit → checks queue backpressure
-
-    If any dependency raises HTTPException, the route never executes.
-    This is the "fail fast" principle applied to the request lifecycle.
-    """
+    """Submit a new job."""
     job = await job_service.async_create_job(db, payload)
     return job
 
@@ -47,18 +29,7 @@ async def get_job(
     db: AsyncSession = Depends(get_async_db),
     _client: str = Depends(enforce_rate_limit),
 ):
-    """
-    Poll job status.
-
-    This endpoint will be called frequently by clients waiting for results.
-    Being async means hundreds of polling requests can be in-flight
-    simultaneously without thread exhaustion.
-
-    Python Internals:
-    UUID in the path parameter — FastAPI uses Pydantic to parse the
-    string from the URL into a UUID object. If it's not a valid UUID,
-    FastAPI returns 422 automatically.
-    """
+    """Fetch a job by ID."""
     job = await job_service.async_get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")

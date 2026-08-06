@@ -1,32 +1,11 @@
-"""
-OCR Worker — Stage 6.
-
-DSA Focus:
-----------
-- Batch Processing Pipeline: process multiple images in sequence
-- Image preprocessing as a pipeline pattern (resize → grayscale → threshold → OCR)
-- Queue within a queue: the job itself may contain multiple pages
-
-Python Internals Focus:
------------------------
-- Context managers for temporary file handling
-- Generator for lazy page-by-page processing
-- typing with Literal and TypedDict
-"""
+"""OCR worker: extract text from images via Tesseract."""
 from typing import Any, Generator
 
 from app.workers.base import BaseJobHandler
 
 
 class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
-    """
-    Extracts text from images using Tesseract OCR.
-
-    Supports:
-    - Single image (base64 or file path)
-    - Batch of images (list of base64 or paths)
-    - Simulated multi-page PDF processing
-    """
+    """Extracts text from single images, batches, or multi-page files."""
 
     def validate_input(self, input_payload: dict[str, Any]) -> None:
         image = input_payload.get("image")
@@ -49,18 +28,7 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                 raise ValueError("Batch limited to 50 images")
 
     def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
-        """
-        DSA: Batch Processing Pipeline.
-
-        Each image goes through a pipeline of transformations:
-        1. Decode (base64 → bytes → PIL Image)
-        2. Preprocess (resize, grayscale, threshold)
-        3. OCR (Tesseract extract)
-        4. Post-process (strip whitespace, confidence)
-
-        For batch: process lazily via generator, collect results.
-        Time complexity: O(n * p) where n = images, p = pixels per image.
-        """
+        """Decode, preprocess, and OCR each image; return per-page results."""
         image = input_payload.get("image")
         images = input_payload.get("images")
         file_path = input_payload.get("file_path")
@@ -89,28 +57,14 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def _process_batch(
         self, images: list[str]
     ) -> Generator[dict[str, Any], None, None]:
-        """
-        DSA: Generator-based batch processing.
-
-        Why a generator here?
-        - Memory efficient: only one image in memory at a time
-        - If we stored all decoded images simultaneously, memory = O(n * image_size)
-        - With a generator, memory = O(image_size) constant
-
-        This is the same pattern used in data pipelines (ETL, ML training).
-        """
+        """Yield OCR results one image at a time."""
         for idx, image_data in enumerate(images):
             yield self._process_single_image(image_data, page_number=idx + 1)
 
     def _process_single_image(
         self, image_data: str, page_number: int = 1
     ) -> dict[str, Any]:
-        """
-        Pipeline: decode → preprocess → OCR → post-process.
-
-        Currently uses Pillow + pytesseract.
-        Falls back to simulated output if tesseract is not installed.
-        """
+        """OCR a base64 image; falls back to simulated output if Tesseract is unavailable."""
         try:
             import base64
             import io
@@ -147,17 +101,7 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             }
 
     def _preprocess_image(self, image):
-        """
-        Image preprocessing pipeline.
-
-        Steps:
-        1. Convert to grayscale (reduces noise, speeds up OCR)
-        2. Resize if too large (saves memory + compute)
-        3. Apply threshold (makes text sharper for OCR)
-
-        DSA parallel: this is a linear pipeline — O(pixels) per step,
-        total O(3 * pixels) = O(pixels).
-        """
+        """Grayscale, downscale large images, and sharpen for OCR."""
         from PIL import ImageFilter
 
         if image.mode != "L":
@@ -173,7 +117,7 @@ class OCRHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         return image
 
     def _process_file(self, file_path: str) -> dict[str, Any]:
-        """Process a file from disk (image or multi-page PDF)."""
+        """OCR an image or multi-page file from disk."""
         try:
             from PIL import Image
             image = Image.open(file_path)

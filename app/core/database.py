@@ -16,7 +16,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def get_db():
-    """FastAPI dependency — yields a DB session, closes after request."""
+    """Yield a request-scoped sync database session."""
     db = SessionLocal()
     try:
         yield db
@@ -26,10 +26,7 @@ def get_db():
 
 @contextmanager
 def db_session():
-    """
-    Context manager for worker / scripts.
-    Commits on success, rolls back on error, always closes.
-    """
+    """Yield a sync session that commits on success and rolls back on error."""
     db = SessionLocal()
     try:
         yield db
@@ -41,9 +38,6 @@ def db_session():
         db.close()
 
 
-# ============================================================
-# ASYNC engine + session — used by FastAPI API routes
-# ============================================================
 async_engine = create_async_engine(
     settings.async_database_url,
     echo=settings.app_env == "development",
@@ -56,23 +50,7 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def get_async_db():
-    """
-    FastAPI dependency — yields an async DB session.
-    Python Internals Focus:
-    -----------------------
-    This is an async generator (has `yield` inside an `async def`).
-    FastAPI detects this and uses it as an async context manager dependency.
-    When you write:
-        async def my_route(db: AsyncSession = Depends(get_async_db)):
-    FastAPI does (conceptually):
-        async with contextmanager(get_async_db)() as db:
-            response = await my_route(db=db)
-    The yield pauses the generator, hands db to the route, and resumes
-    after the route finishes (to run the finally block).
-    expire_on_commit=False above means attributes on ORM objects remain
-    accessible after commit without triggering a lazy load (which would
-    fail outside the session context).
-    """
+    """Yield a request-scoped async database session."""
     async with AsyncSessionLocal() as session:
         try:
             yield session
@@ -82,10 +60,7 @@ async def get_async_db():
 
 @asynccontextmanager
 async def async_db_session():
-    """
-    Async context manager for services that need commit/rollback control.
-    Mirrors the sync db_session() but for async code paths.
-    """
+    """Yield an async session that commits on success and rolls back on error."""
     async with AsyncSessionLocal() as session:
         try:
             yield session
@@ -97,4 +72,5 @@ async def async_db_session():
 
 def init_db():
     import app.models
+
     Base.metadata.create_all(bind=engine)
