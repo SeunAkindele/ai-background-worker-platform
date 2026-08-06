@@ -1,9 +1,3 @@
-"""
-Run with: python -m app.workers.redis_worker
-
-Separate OS process — does NOT share memory with FastAPI.
-Communicates only via Redis + PostgreSQL.
-"""
 import logging
 import signal
 import threading
@@ -22,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class RedisWorker:
+    """Polls Redis for jobs and runs the matching handler."""
+
     def __init__(self, poll_interval: float = 0.5) -> None:
         self._poll_interval = poll_interval
         self._running = True
