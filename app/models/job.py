@@ -22,9 +22,11 @@ class JobType(str, enum.Enum):
     EMBEDDINGS = "embeddings"
     TRANSCRIPTION = "transcription"
     RECOMMENDATIONS = "recommendations"
-    # Stage 13: RAG pipeline job types
     INGESTION = "ingestion"
     RAG_QUERY = "rag_query"
+    # Stage 14
+    QUERY_EXPAND = "query_expand"
+    RERANK = "rerank"
 
 
 class JobPriority(str, enum.Enum):
