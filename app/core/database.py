@@ -22,8 +22,7 @@ def get_db():
 
 
 def init_db():
-    """Create tables. For Stage 1, calling this on startup is fine."""
-    # Import all models so SQLAlchemy can register metadata
-    import app.models
+    """Create database tables from registered SQLAlchemy models."""
+    import app.models  # noqa: F401 — register model metadata
     Base.metadata.create_all(bind=engine)
     

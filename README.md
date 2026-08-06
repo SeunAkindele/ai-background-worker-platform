@@ -1,110 +1,63 @@
 # AI Background Worker Platform
 
-A staged backend platform for submitting, queuing, and processing AI background jobs (summarization, OCR, embeddings, transcription, recommendations).
+HTTP API for submitting and tracking AI background jobs. Jobs are persisted in PostgreSQL and scheduled through an in-process FIFO queue, ready for worker consumption.
 
-**Current branch:** `feat/stage-1`  
-**Current stage:** Stage 1 — Job API, persistence, and in-memory queue
-
-## Stage 1 scope (this branch)
-
-Stage 1 establishes the core job lifecycle without a background worker or external queue infrastructure.
-
-| Area | Status |
-|------|--------|
-| FastAPI HTTP API | Done |
-| PostgreSQL job persistence (SQLAlchemy) | Done |
-| In-memory FIFO job queue (job IDs only) | Done |
-| Job create / get / list endpoints | Done |
-| `update_job_status` service (for workers in Stage 2) | Done |
-| Automated tests (isolated test database) | Done |
-| Background worker | Not in this stage |
-| Redis / Docker Compose | Not in this stage |
-
-### Architecture (Stage 1)
+## Architecture
 
 ```
 Client
   │
   ▼
-FastAPI  ──►  PostgreSQL  (full job records: status, payloads, timestamps)
+FastAPI  ──►  PostgreSQL  (job records: type, status, payloads, timestamps)
   │
-  └──►  InMemoryJobQueue  (FIFO of job UUIDs — scheduling order only)
+  └──►  InMemoryJobQueue  (FIFO of job UUIDs — scheduling order)
 ```
 
-On job creation, the API:
+On create, the API inserts a `pending` job, enqueues its ID, and returns the record. Status transitions (`pending` → `processing` → `completed` | `failed`) are available via the job service for workers.
 
-1. Inserts a `pending` job row in PostgreSQL
-2. Enqueues the job ID in the in-process queue
-3. Returns the job to the caller
+## Features
 
-No worker consumes the queue yet; jobs remain `pending` until Stage 2.
+- **Job API** — create, fetch, and list jobs with pagination
+- **Persistence** — SQLAlchemy models on PostgreSQL
+- **In-memory FIFO queue** — schedules job IDs for processing
+- **Job types** — summarization, OCR, embeddings, transcription, recommendations
+- **Status updates** — service method for workers to set status, result, or error
+- **Isolated tests** — dedicated test database via `.env.test`
 
-### Job model
+## Quick start
 
-**Statuses:** `pending` → `processing` → `completed` | `failed`
-
-**Types:** `summarization`, `ocr`, `embeddings`, `transcription`, `recommendations`
-
-## Project structure
-
-```
-app/
-├── api/jobs.py           # REST endpoints
-├── core/
-│   ├── database.py       # SQLAlchemy engine, sessions, init_db
-│   └── queue.py          # In-memory FIFO queue
-├── models/job.py         # Job ORM model and enums
-├── schemas/job_schema.py # Pydantic request/response models
-├── services/job_service.py
-├── config.py
-└── main.py
-tests/
-├── conftest.py           # Test client, DB reset, queue clear
-└── test_jobs.py
-```
-
-## Prerequisites
-
-- Python 3.11+
-- PostgreSQL (local instance; Docker is not required for Stage 1)
-
-## Setup
+**Prerequisites:** Python 3.11+, local PostgreSQL
 
 ```bash
-# Clone and enter the repo
 cd ai-background-worker-platform
-
-# Create a virtual environment (recommended)
 python -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 
-# App database
 cp .env.example .env
-# Edit DATABASE_URL in .env for your local PostgreSQL
-
-# Create the database (example)
+# Set DATABASE_URL in .env
 createdb ai_worker_platform
 
-# Test database (separate from app DB)
 cp .env.test.example .env.test
 createdb ai_worker_platform_test
-```
 
-## Running the API
-
-```bash
 uvicorn app.main:app --reload
 ```
 
 - Health: `GET http://localhost:8000/health`
-- Interactive docs: `http://localhost:8000/docs`
+- Docs: `http://localhost:8000/docs`
 
-Tables are created automatically on startup via `init_db()`.
+```bash
+curl -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"job_type": "summarization", "input": {"text": "hello world"}}'
+```
 
-## API endpoints
+```bash
+pytest
+```
+
+## API
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -113,25 +66,25 @@ Tables are created automatically on startup via `init_db()`.
 | `GET` | `/jobs/{job_id}` | Fetch a job by UUID |
 | `GET` | `/jobs` | List jobs (`skip`, `limit`; returns `jobs` + `total`) |
 
-**Example — create a job:**
+## Project layout
 
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"job_type": "summarization", "input": {"text": "hello world"}}'
+```
+app/
+├── api/jobs.py
+├── core/
+│   ├── database.py
+│   └── queue.py
+├── models/job.py
+├── schemas/job_schema.py
+├── services/job_service.py
+├── config.py
+└── main.py
+tests/
+├── conftest.py
+└── test_jobs.py
 ```
 
-## Tests
-
-Tests use `.env.test` and a dedicated database so they never touch the development DB.
-
-```bash
-pytest
-```
-
-Coverage includes job creation, validation, retrieval, listing, enqueue behavior, and status updates via `job_service.update_job_status`.
-
-## Environment variables
+## Environment
 
 | Variable | Description |
 |----------|-------------|

@@ -49,11 +49,8 @@ class JobService:
         result_payload: dict | None = None,
         error_message: str | None = None,
     ) -> Job | None:
-        """
-        You'll use this heavily in Stage 2 (worker updates status).
-        Implement it now so Stage 2 is easy.
-        """
-        
+        """Update job status and optional result or error payload."""
+
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             return None

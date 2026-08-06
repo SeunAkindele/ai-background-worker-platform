@@ -12,27 +12,27 @@ class InMemoryJobQueue:
         self._queue: deque[UUID] = deque()
 
     def enqueue(self, job_id: UUID) -> None:
-        """O(1) — add to right end."""
+        """Append a job ID to the end of the queue."""
         self._queue.append(job_id)
 
     def dequeue(self) -> UUID | None:
-        """O(1) — remove from left end. Returns None if empty."""
+        """Remove and return the next job ID, or None if empty."""
         if not self._queue:
             return None
         return self._queue.popleft()
 
     def clear(self) -> None:
-        """Remove all queued job IDs. Useful for tests."""
+        """Remove all queued job IDs."""
         self._queue.clear()
 
     def size(self) -> int:
-        """O(1)."""
+        """Return the number of queued job IDs."""
         return len(self._queue)
 
     def peek(self) -> UUID | None:
-        """Optional: look at front without removing."""
+        """Return the front job ID without removing it."""
         return self._queue[0] if self._queue else None
 
 
-# Single shared instance for the app process (Stage 1 only)
 job_queue = InMemoryJobQueue()
+
