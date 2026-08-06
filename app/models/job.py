@@ -22,20 +22,17 @@ class JobType(str, enum.Enum):
     EMBEDDINGS = "embeddings"
     TRANSCRIPTION = "transcription"
     RECOMMENDATIONS = "recommendations"
+    INGESTION = "ingestion"
+    RAG_QUERY = "rag_query"
+    # Stage 14
+    QUERY_EXPAND = "query_expand"
+    RERANK = "rerank"
 
 
 class JobPriority(str, enum.Enum):
     HIGH = "high"
     NORMAL = "normal"
     LOW = "low"
-
-
-# Lower number = higher priority (used by heapq min-heap)
-PRIORITY_RANK: dict[JobPriority, int] = {
-    JobPriority.HIGH: 0,
-    JobPriority.NORMAL: 1,
-    JobPriority.LOW: 2,
-}
 
 
 class Job(Base):

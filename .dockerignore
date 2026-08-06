@@ -1,0 +1,43 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Git
+.git/
+.gitignore
+
+# Environment files with secrets
+.env
+.env.*
+!.env.example
+!.env.test.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads (don't bake local uploads into the image)
+uploads/
+
+# Docker (prevent recursive context)
+docker-compose.yml
+
+# Docs
+*.md

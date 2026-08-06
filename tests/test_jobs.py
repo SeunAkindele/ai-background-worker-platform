@@ -1,11 +1,8 @@
-from uuid import UUID
-
-from app.core import queue as queue_module
 from app.models.job import JobStatus
 from app.services.job_service import job_service
 
 
-def test_create_job_returns_pending(client):
+def test_create_job_returns_pending(client, celery_calls):
     response = client.post(
         "/jobs",
         json={"job_type": "summarization", "input": {"text": "hello world"}},
@@ -14,6 +11,11 @@ def test_create_job_returns_pending(client):
     data = response.json()
     assert data["status"] == "pending"
     assert data["job_type"] == "summarization"
+    assert data["priority"] == "normal"
+    assert len(celery_calls) == 1
+    assert celery_calls[0]["name"] == "process_job"
+    assert celery_calls[0]["queue"] == "normal"
+    assert celery_calls[0]["args"] == [data["id"]]
 
 
 def test_create_job_validation_error(client):
@@ -21,7 +23,14 @@ def test_create_job_validation_error(client):
         "/jobs",
         json={"input": {"text": "missing job_type"}},
     )
+    assert response.status_code == 422
 
+
+def test_create_job_rejects_invalid_ocr_input(client):
+    response = client.post(
+        "/jobs",
+        json={"job_type": "ocr", "input": {"image_url": "http://example.com/a.png"}},
+    )
     assert response.status_code == 422
 
 
@@ -40,28 +49,34 @@ def test_get_job_success(client):
     assert data["job_type"] == "summarization"
 
 
-def test_create_job_enqueues(client):
-    before = queue_module.job_queue.size()
+def test_create_job_dispatches_celery_task(client, celery_calls):
     response = client.post(
         "/jobs",
-        json={"job_type": "ocr", "input": {"image_url": "http://example.com/a.png"}},
+        json={
+            "job_type": "ocr",
+            "input": {"image": "aGVsbG8="},  # base64 "hello"
+        },
     )
     assert response.status_code == 201
-    assert queue_module.job_queue.size() == before + 1
-
-
-def test_create_job_enqueues_correct_id(client):
-    before = queue_module.job_queue.size()
-
-    response = client.post(
-        "/jobs",
-        json={"job_type": "ocr", "input": {"image_url": "http://example.com/a.png"}},
-    )
-
     job_id = response.json()["id"]
 
-    assert queue_module.job_queue.size() == before + 1
-    assert queue_module.job_queue.peek() == UUID(job_id)
+    assert len(celery_calls) == 1
+    assert celery_calls[0]["name"] == "process_job"
+    assert celery_calls[0]["args"] == [job_id]
+    assert celery_calls[0]["queue"] == "normal"
+
+
+def test_create_job_high_priority_queue(client, celery_calls):
+    response = client.post(
+        "/jobs",
+        json={
+            "job_type": "summarization",
+            "input": {"text": "urgent"},
+            "priority": "high",
+        },
+    )
+    assert response.status_code == 201
+    assert celery_calls[-1]["queue"] == "high"
 
 
 def test_get_job_not_found(client):
@@ -91,7 +106,7 @@ def test_list_jobs(client):
     )
     client.post(
         "/jobs",
-        json={"job_type": "ocr", "input": {"image_url": "http://example.com/b.png"}},
+        json={"job_type": "ocr", "input": {"image": "aGVsbG8="}},
     )
 
     response = client.get("/jobs")
