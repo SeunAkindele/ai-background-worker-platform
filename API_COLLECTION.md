@@ -296,7 +296,7 @@ Content-Type: application/json
 }
 ```
 
-### 4c. Long Duration (many chunks, tests merge intervals)
+### 4c. Long Duration (many overlapping chunks)
 
 ```
 POST /jobs
@@ -310,7 +310,7 @@ Content-Type: application/json
   "job_type": "transcription",
   "priority": "low",
   "input": {
-    "text": "This is a longer transcription test that will generate many overlapping chunks which the merge intervals algorithm must combine into a clean non-overlapping timeline of transcript segments with aligned timestamps from start to finish without any gaps or duplicates in the final output",
+    "text": "This is a longer transcription test that will generate many overlapping chunks which must be combined into a clean non-overlapping timeline of transcript segments with aligned timestamps from start to finish without any gaps or duplicates in the final output",
     "duration": 300
   }
 }
@@ -694,5 +694,5 @@ All `POST /jobs` requests accept an optional `priority` field:
 
 - **Summarization** and **Embeddings** workers download ML models on first use (~1.6GB and ~80MB respectively). First job will be slow.
 - **OCR** requires Tesseract installed on the system (`brew install tesseract`). Without it, returns simulated output.
-- **Transcription** is currently simulated — distributes provided `text` across time chunks. Real Whisper integration comes in Stage 9.
+- **Transcription** is currently simulated — distributes provided `text` across time chunks. Whisper-backed audio transcription is planned.
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.

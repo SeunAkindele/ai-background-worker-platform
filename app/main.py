@@ -11,7 +11,6 @@ from app.core.database import init_db
 async def lifespan(app: FastAPI):
     init_db()
     yield
-    print("Server shutting down")  # shutdown
 
 
 app = FastAPI(
@@ -23,9 +22,11 @@ app = FastAPI(
 app.include_router(jobs_router)
 app.include_router(admin_router)
 
+
 @app.get("/health")
 def health():
     from app.core.redis_client import redis_client
+
     return {
         "status": "ok",
         "queued_jobs": redis_client.llen("celery"),

@@ -39,7 +39,7 @@ def test_same_priority_fifo_by_created_at(fake_redis):
 
 
 def test_queue_survives_new_client_instance(fake_redis):
-    """Simulates API enqueue + separate worker dequeue (different objects, same Redis)."""
+    """Enqueue and dequeue across separate queue clients sharing the same Redis."""
     q1 = RedisJobQueue(client=fake_redis)
     q2 = RedisJobQueue(client=fake_redis)
     job_id = uuid4()

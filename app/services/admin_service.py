@@ -18,14 +18,7 @@ from app.services.heartbeat_service import heartbeat_service
 
 class AdminService:
     def get_dashboard(self, db: Session) -> DashboardResponse:
-        """
-        Aggregate metrics across jobs, workers, and queues.
-
-        DSA: Hash map aggregation.
-        We're building a frequency map (status → count) with a single
-        GROUP BY query. PostgreSQL does this with a hash aggregate internally —
-        same concept as counting word frequencies with a dict in Python.
-        """
+        """Aggregate job, queue, and worker metrics for the admin dashboard."""
         status_counts = dict(
             db.query(Job.status, func.count(Job.id))
             .group_by(Job.status)
@@ -58,22 +51,7 @@ class AdminService:
     def get_top_k_slowest_jobs(
         self, db: Session, k: int = 10
     ) -> list[TopKJobResponse]:
-        """
-        DSA: Top-K using a heap.
-
-        Find the K slowest completed jobs without sorting the entire table.
-
-        Algorithm (conceptually, even though SQL does the work):
-        1. Compute duration for each completed job
-        2. Use a min-heap of size k
-        3. For each job: if duration > heap min, replace
-        4. Result: k largest durations
-
-        Time: O(n log k) — better than O(n log n) full sort when k << n
-        Space: O(k)
-
-        We demonstrate this both via SQL (practical) and Python (educational).
-        """
+        """Return the K slowest completed jobs by duration."""
         completed_jobs = (
             db.query(
                 Job.id,
@@ -117,10 +95,6 @@ class AdminService:
     def _slowest_job_types(
         self, db: Session, k: int = 5
     ) -> list[JobTypeStats]:
-        """
-        DSA: GROUP BY + aggregation = building a hash map of
-        {job_type: (count, avg_duration)}, then sorting by avg_duration.
-        """
         rows = (
             db.query(
                 Job.job_type,

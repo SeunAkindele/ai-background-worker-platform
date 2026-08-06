@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -30,10 +29,7 @@ class LogService:
         job_id: uuid.UUID,
         limit: int = 100,
     ) -> tuple[list[JobLog], int]:
-        """
-        DSA: The query uses the B-tree index on job_id for O(log n) lookup,
-        then returns rows ordered by created_at (append-order).
-        """
+        """Return logs for a job ordered by created_at, plus total count."""
         query = (
             db.query(JobLog)
             .filter(JobLog.job_id == job_id)

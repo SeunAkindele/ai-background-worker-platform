@@ -22,7 +22,6 @@ def _backoff_seconds(retries: int) -> int:
 
 
 def _worker_name() -> str:
-    """Process-level worker identity — matches the periodic heartbeat thread."""
     return get_process_worker_name()
 
 
@@ -30,10 +29,10 @@ def _worker_name() -> str:
     bind=True, name="process_job", max_retries=MAX_RETRIES, acks_late=True
 )
 def process_job(self, job_id: str) -> None:
+    """Process a job by ID with audit logging, heartbeats, and retry backoff."""
     job_uuid = UUID(job_id)
     worker = _worker_name()
 
-    # --- Phase 1: Pick up the job ---
     with db_session() as db:
         job = job_service.get_job(db, job_uuid)
         if job is None:
@@ -55,12 +54,10 @@ def process_job(self, job_id: str) -> None:
         handler = get_handler(job.job_type)
         input_payload = job.input_payload
 
-    # --- Phase 2: Process ---
     try:
         with timed_block(f"process:{job.job_type.value}") as timer:
             result = handler(input_payload)
     except Exception as exc:
-        # --- Phase 3a: Handle failure ---
         countdown = _backoff_seconds(self.request.retries)
         with db_session() as db:
             log_service.add_log(
@@ -83,7 +80,6 @@ def process_job(self, job_id: str) -> None:
                 heartbeat_service.record_completion(db, worker, success=False)
             return
 
-    # --- Phase 3b: Handle success ---
     with db_session() as db:
         job_service.update_job_status(
             db, job_uuid, JobStatus.COMPLETED, result_payload=result,

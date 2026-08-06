@@ -23,16 +23,7 @@ class HeartbeatService:
         update_type: bool = True,
         update_status: bool = True,
     ) -> WorkerHeartbeat:
-        """
-        Shared upsert logic for beat() and pulse().
-
-        DSA: This is a hash map "put" operation conceptually.
-        worker_name is the key, the heartbeat row is the value.
-        The unique index on worker_name gives O(log n) lookup.
-
-        update_type=False  → preserve existing worker_type (used by pulse)
-        update_status=False → preserve existing status + current_job_id (used by pulse)
-        """
+        """Insert or update a worker heartbeat row."""
         existing = (
             db.query(WorkerHeartbeat)
             .filter(WorkerHeartbeat.worker_name == worker_name)
@@ -72,7 +63,7 @@ class HeartbeatService:
         status: WorkerStatus = WorkerStatus.ONLINE,
         current_job_id: uuid.UUID | None = None,
     ) -> WorkerHeartbeat:
-        """State-changing heartbeat: sets status, worker_type, and current_job_id."""
+        """Update worker status, type, and current job."""
         return self._upsert(
             db, worker_name,
             worker_type=worker_type,
@@ -83,12 +74,7 @@ class HeartbeatService:
         )
 
     def pulse(self, db: Session, worker_name: str) -> None:
-        """
-        Liveness-only ping from the background thread.
-
-        Only refreshes last_seen_at. Preserves status, current_job_id,
-        and worker_type so it never overwrites state set by beat().
-        """
+        """Refresh last_seen_at without changing status or current job."""
         self._upsert(
             db, worker_name,
             update_type=False,
@@ -96,7 +82,7 @@ class HeartbeatService:
         )
 
     def mark_offline(self, db: Session, worker_name: str) -> None:
-        """Immediately mark a worker as OFFLINE on graceful shutdown."""
+        """Mark a worker offline on graceful shutdown."""
         worker = (
             db.query(WorkerHeartbeat)
             .filter(WorkerHeartbeat.worker_name == worker_name)
@@ -112,7 +98,7 @@ class HeartbeatService:
     def record_completion(
         self, db: Session, worker_name: str, success: bool
     ) -> None:
-        """Increment the completed or failed counter after a job finishes."""
+        """Increment completed or failed counters after a job finishes."""
         worker = (
             db.query(WorkerHeartbeat)
             .filter(WorkerHeartbeat.worker_name == worker_name)
@@ -133,13 +119,7 @@ class HeartbeatService:
         return db.query(WorkerHeartbeat).all()
 
     def mark_stale_workers_offline(self, db: Session) -> int:
-        """
-        Any worker that hasn't sent a heartbeat within HEARTBEAT_TIMEOUT
-        is considered offline. Returns count of workers marked offline.
-
-        DSA: This is a sliding window check — we look at a fixed time window
-        (now - timeout) and mark everything outside it as stale.
-        """
+        """Mark workers offline when last_seen_at is older than HEARTBEAT_TIMEOUT."""
         cutoff = datetime.now(timezone.utc) - HEARTBEAT_TIMEOUT
         stale_workers = (
             db.query(WorkerHeartbeat)
