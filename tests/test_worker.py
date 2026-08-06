@@ -19,18 +19,8 @@ def test_worker_completes_summarization_job(client):
     job_id = response.json()["id"]
     assert response.json()["status"] == "pending"
 
-    # Poll until worker finishes (fake work is instant)
-    deadline = time.time() + 5
-    status = "pending"
-    while time.time() < deadline and status != "completed":
-        data = client.get(f"/jobs/{job_id}").json()
-        status = data["status"]
-        if status == "failed":
-            pytest.fail(f"Job failed: {data.get('error_message')}")
-        time.sleep(0.2)
-
-    assert status == "completed"
-    data = client.get(f"/jobs/{job_id}").json()
+    data = _wait_until_completed(client, job_id)
+    assert data["status"] == "completed"
     assert data["result_payload"]["summary"] == "summary generated"
 
 
@@ -47,7 +37,6 @@ def _wait_until_completed(client, job_id: str, timeout: float = 5.0) -> dict:
 
 
 def test_high_priority_processed_before_low(client):
-    # Stop worker so jobs pile up in the queue (no race)
     local_worker.stop()
     low = client.post(
         "/jobs",
@@ -67,7 +56,6 @@ def test_high_priority_processed_before_low(client):
     ).json()
 
     assert job_queue.size() == 2
-    # HIGH should be at front of priority queue even though LOW was posted first
     assert job_queue.peek() == UUID(high["id"])
 
     local_worker.start()
@@ -75,5 +63,4 @@ def test_high_priority_processed_before_low(client):
     high_data = _wait_until_completed(client, high["id"])
     low_data = _wait_until_completed(client, low["id"])
 
-    # HIGH finished first → earlier updated_at
     assert high_data["updated_at"] <= low_data["updated_at"]

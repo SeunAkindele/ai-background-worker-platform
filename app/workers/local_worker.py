@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.core.database import db_session
 from app.core.queue import job_queue
-from app.models.job import Job, JobStatus
+from app.models.job import JobStatus
 from app.services.job_service import job_service
 from app.workers.decorators import log_execution_time
 from app.workers.handlers import get_handler
@@ -14,13 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class LocalWorker:
-    """
-    Background thread that:
-    1. dequeues job_id
-    2. marks processing
-    3. runs fake handler
-    4. marks completed or failed
-    """
+    """Dequeues jobs and runs the handler for each job type."""
 
     def __init__(self, poll_interval: float = 0.5) -> None:
         self._poll_interval = poll_interval
@@ -42,8 +36,8 @@ class LocalWorker:
         logger.info("Local worker stopped")
 
     def _iter_jobs(self):
-        """Generator: yields one job_id at a time; sleeps when queue is empty."""
-        while not self._stop_event.is_set():   # stop when app shuts down
+        """Yield job IDs from the queue; idle-sleep when empty."""
+        while not self._stop_event.is_set():
             job_id = job_queue.dequeue()
             if job_id is None:
                 time.sleep(self._poll_interval)
@@ -51,7 +45,6 @@ class LocalWorker:
             yield job_id
 
     def _run(self) -> None:
-        """Main loop — runs in background thread."""
         for job_id in self._iter_jobs():
             try:
                 self._process_job(job_id)
@@ -61,21 +54,18 @@ class LocalWorker:
     @log_execution_time
     def _process_job(self, job_id: UUID) -> None:
         with db_session() as db:
-            # get job from DB
             job = job_service.get_job(db, job_id)
             if not job:
                 logger.warning("Job %s not found in DB", job_id)
                 return
-            if job.status != JobStatus.PENDING:  # TODO: handle other statuses
+            if job.status != JobStatus.PENDING:
                 logger.warning("Job %s skipped — status is %s", job_id, job.status)
                 return
-            # update status → PROCESSING
+
             job_service.update_job_status(db, job_id, JobStatus.PROCESSING)
             try:
-                # handler = get_handler(job.job_type)(job.input_payload)
                 result = get_handler(job.job_type)(job.input_payload)
             except Exception as exc:
-                # On handler error: status → FAILED with error_message
                 logger.exception("Job %s failed", job_id)
                 job_service.update_job_status(
                     db,
@@ -84,13 +74,13 @@ class LocalWorker:
                     error_message=str(exc),
                 )
                 return
-            # update status → COMPLETED with result_payload
+
             job_service.update_job_status(
                 db,
                 job_id,
                 JobStatus.COMPLETED,
                 result_payload=result,
             )
-            
-# Singleton — started from main.py lifespan
+
+
 local_worker = LocalWorker()

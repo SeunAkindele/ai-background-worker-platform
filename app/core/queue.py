@@ -8,19 +8,14 @@ from app.models.job import PRIORITY_RANK, JobPriority
 
 class PriorityJobQueue:
     """
-    Min-heap priority queue.
+    Thread-safe priority queue for job IDs.
 
-    Tuple stored in heap: (priority_rank, created_at_ts, job_id)
-    - Lower priority_rank = dequeued first (HIGH before NORMAL before LOW)
-    - Same priority → older created_at_ts wins (FIFO tie-break)
-    - job_id breaks final ties (deterministic ordering)
-
-    DSA: enqueue O(log n), dequeue O(log n), peek O(1)
+    Ordering: priority rank, then created_at (FIFO within the same priority).
     """
 
     def __init__(self) -> None:
         self._heap: list[tuple[int, float, UUID]] = []
-        self._lock = threading.Lock()  # thread-safe for worker + API
+        self._lock = threading.Lock()
 
     def enqueue(
         self,

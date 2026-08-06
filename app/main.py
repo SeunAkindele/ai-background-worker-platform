@@ -10,10 +10,9 @@ from app.workers.local_worker import local_worker
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    local_worker.start() # start the worker
+    local_worker.start()
     yield
-    print("Server shutting down")  # shutdown
-    local_worker.stop() # stop the worker
+    local_worker.stop()
 
 
 app = FastAPI(

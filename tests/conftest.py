@@ -5,12 +5,12 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Load test env before any app imports so Settings uses the test database.
+# Ensure Settings binds to the test database before app imports.
 load_dotenv(ROOT / ".env.test", override=True)
 
 if not os.environ.get("DATABASE_URL"):
     raise RuntimeError(
-        "Tests require a .env.test file with DATABASE_URL. "
+        "DATABASE_URL is required for tests. "
         "Copy .env.test.example to .env.test and create the test database."
     )
 
@@ -19,7 +19,7 @@ os.environ["APP_ENV"] = "test"
 import pytest
 from fastapi.testclient import TestClient
 
-import app.models  # noqa: F401 — register models; do not bind as `app`
+import app.models  # noqa: F401
 from app.core.database import Base, SessionLocal, engine
 from app.core.queue import job_queue
 from app.main import app as fastapi_app
@@ -48,7 +48,7 @@ def db_session():
     finally:
         db.close()
 
-# After tests, optional:
+
 @pytest.fixture(autouse=True)
 def reset_queue(client):
     job_queue.clear()

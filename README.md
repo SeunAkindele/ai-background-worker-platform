@@ -26,7 +26,7 @@ On create, the API inserts a `pending` job, enqueues its ID by priority, and ret
 
 - **Jobs** — REST API to create, fetch, and list jobs with typed payloads, lifecycle status, and `high` / `normal` / `low` priority
 - **Priority queue** — Thread-safe min-heap that schedules HIGH before NORMAL before LOW (FIFO within the same priority)
-- **Workers** — Local background worker that consumes the queue and runs stub handlers per job type
+- **Workers** — Local background worker that consumes the queue and runs handlers per job type
 - **Persistence** — SQLAlchemy models on PostgreSQL, with a dedicated test database
 - **Job types** — summarization, OCR, embeddings, transcription, recommendations
 
