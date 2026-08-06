@@ -1,11 +1,2 @@
--- This runs ONCE when the Postgres container is first created.
--- CREATE EXTENSION IF NOT EXISTS is idempotent — safe to run again
--- if you manually exec into the container later.
---
--- pgvector adds:
---   - vector(n) column type: stores n-dimensional float arrays
---   - <=> operator: cosine distance (1 - cosine_similarity)
---   - <#> operator: negative inner product  
---   - <-> operator: L2 (Euclidean) distance
---   - ivfflat / hnsw index types for approximate nearest neighbor
+-- Enable pgvector for embedding storage and nearest-neighbor search.
 CREATE EXTENSION IF NOT EXISTS vector;

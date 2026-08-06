@@ -1,6 +1,4 @@
-"""
-Celery dispatch tests — Stage 11 job-type queues + native priority.
-"""
+"""Celery dispatch tests — job-type queues and native priority."""
 
 
 def test_default_routes_to_job_type_queue(client, celery_calls):

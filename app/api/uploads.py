@@ -36,18 +36,7 @@ async def upload_file(
     db: AsyncSession = Depends(get_async_db),
     _client: str = Depends(enforce_rate_limit),
 ):
-    """
-    Upload a file for later use in a job.
-
-    Python Internals Focus:
-    -----------------------
-    UploadFile wraps a SpooledTemporaryFile — small files stay in memory,
-    large files spill to disk automatically. Our save_upload() still reads
-    in chunks so we never call .read() without a size limit.
-
-    DSA Focus:
-    Stream → hash → deduplicate. Memory stays O(chunk_size) not O(file_size).
-    """
+    """Upload a file for later use in a job."""
     try:
         return await file_service.save_upload(db, file, purpose)
     except FileValidationError as exc:
@@ -66,11 +55,7 @@ async def create_job_with_upload(
     _client: str = Depends(enforce_rate_limit),
     _pending: None = Depends(enforce_pending_limit),
 ):
-    """
-    One-shot: upload file + create job.
-
-    Only OCR and transcription accept file uploads at this stage.
-    """
+    """Upload a file and create an OCR or transcription job in one request."""
     if job_type not in JOB_TYPE_TO_PURPOSE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

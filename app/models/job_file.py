@@ -16,14 +16,8 @@ class FilePurpose(str, enum.Enum):
 
 
 class JobFile(Base):
-    """
-    Metadata for an uploaded file stored on disk.
+    """Metadata for an uploaded file; content_hash enables deduplication."""
 
-    DSA Focus:
-    ----------
-    content_hash is the deduplication key — a hash map from SHA-256 → file record.
-    Two uploads of the same bytes → same hash → one stored file, two references.
-    """
     __tablename__ = "job_files"
 
     id: Mapped[uuid.UUID] = mapped_column(

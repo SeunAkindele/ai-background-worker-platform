@@ -2,11 +2,11 @@
 
 Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` (Kubernetes NodePort) or `http://localhost:8000` after `kubectl port-forward svc/api 8000:8000`
 
-> **Stage 13 (Naive RAG):** Compose runs **seven** Celery workers (one per job type), including `ingestion` and `rag_query`. Postgres uses **pgvector**. New HTTP endpoints: `POST /documents/ingest`, `GET /documents/{id}`, `GET /documents/{id}/chunks`, `POST /rag/query` (async job), `POST /rag/query/sync` (answer in the same response). Prefer Compose for Stage 13; Kubernetes manifests still reflect Stage 12 (five workers, no pgvector) until updated later.
+> **Docker Compose:** Runs **seven** Celery workers (one per job type), including `ingestion` and `rag_query`. Postgres uses **pgvector** (`pgvector/pgvector:pg16`). RAG endpoints: `POST /documents/ingest`, `GET /documents/{id}`, `GET /documents/{id}/chunks`, `POST /rag/query` (async), `POST /rag/query/sync` (inline answer). Prefer Compose for full RAG.
 >
-> **Stage 12 (Kubernetes):** The same core HTTP API runs on Kubernetes. Deploy with `kubectl apply -k infra/kubernetes/`. Five worker Deployments consume one queue each; the API Service exposes NodePort `30080`. Kubernetes probes hit `GET /ready`.
+> **Kubernetes:** Deploy with `kubectl apply -k infra/kubernetes/`. Current manifests deploy **five** workers (no ingestion/rag_query) and non-pgvector Postgres — use Compose for RAG until K8s is updated. API Service exposes NodePort `30080`; probes hit `GET /ready`.
 >
-> **Stage 11 (split workers):** With `docker compose up`, workers share the **same image**. Jobs are routed to a Redis queue named after `job_type`; `priority` still controls ordering inside that queue (Celery integers 0 / 5 / 9).
+> **Workers:** With `docker compose up`, workers share the **same image**. Jobs route to a Redis queue named after `job_type`; `priority` orders work inside that queue (Celery integers 0 / 5 / 9).
 
 ---
 
@@ -21,13 +21,13 @@ Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` 
 | `POST` | `/uploads` | Upload a file (`multipart`: `file`, `purpose`) |
 | `POST` | `/uploads/job` | Upload + create OCR/transcription job (one-shot) |
 | `GET` | `/uploads/{file_id}` | Upload metadata by file UUID |
-| `POST` | `/documents/ingest` | Ingest a document into the RAG knowledge base (Stage 13) |
-| `GET` | `/documents/{document_id}` | Get document metadata/status (Stage 13) |
-| `GET` | `/documents/{document_id}/chunks` | List chunks for a document (Stage 13) |
-| `POST` | `/rag/query` | Async RAG query — returns `job_id` (Stage 13) |
-| `POST` | `/rag/query/sync` | Sync RAG query — returns answer in one response (Stage 13) |
+| `POST` | `/documents/ingest` | Ingest a document into the RAG knowledge base |
+| `GET` | `/documents/{document_id}` | Get document metadata/status |
+| `GET` | `/documents/{document_id}/chunks` | List chunks for a document |
+| `POST` | `/rag/query` | Async RAG query — returns `job_id` |
+| `POST` | `/rag/query/sync` | Sync RAG query — returns answer in one response |
 | `GET` | `/health` | Health check (per-type queue sizes) |
-| `GET` | `/ready` | Readiness probe (Kubernetes; Stage 12) |
+| `GET` | `/ready` | Readiness probe (Kubernetes) |
 | `GET` | `/admin/dashboard` | Full system overview (jobs, workers, queues) |
 | `GET` | `/admin/jobs/{job_id}/logs` | Audit trail / logs for a specific job |
 | `GET` | `/admin/errors` | Recent error logs across all jobs |
@@ -231,7 +231,7 @@ Content-Type: application/json
 }
 ```
 
-### 3c. File Upload (recommended — Stage 9)
+### 3c. File Upload (recommended)
 
 **Step 1 — Upload the file:**
 
@@ -409,7 +409,7 @@ Content-Type: application/json
 }
 ```
 
-### 4d. File Upload + Whisper (Stage 9)
+### 4d. File Upload + Whisper
 
 **Step 1 — Upload audio/video:**
 
@@ -598,9 +598,9 @@ Content-Type: application/json
 
 ---
 
-## 6. Document Ingestion & RAG (Stage 13)
+## 6. Document Ingestion & RAG
 
-Naive RAG flow: **ingest documents** → store chunk embeddings in Postgres/pgvector → **ask questions** against retrieved context.
+Flow: **ingest documents** → store chunk embeddings in Postgres/pgvector → **ask questions** against retrieved context.
 
 ### 6a. Ingest a document
 
@@ -777,7 +777,7 @@ curl -X POST http://localhost:8000/rag/query \
   -d '{"question":"How does Python asyncio work?","top_k":5}'
 ```
 
-### 6e. Sync RAG query (ChatGPT-style — answer in one response)
+### 6e. Sync RAG query (answer in one response)
 
 ```
 POST /rag/query/sync
@@ -845,7 +845,7 @@ Prefer `POST /documents/ingest` and `POST /rag/query` — they create the docume
 
 ---
 
-## 7. File Upload Endpoints (Stage 9)
+## 7. File Upload Endpoints
 
 ### Upload a file
 
@@ -933,7 +933,7 @@ GET /jobs?skip=0&limit=10
 
 ## 10. Health & Admin
 
-### Readiness Check (Stage 12)
+### Readiness Check
 
 ```
 GET /ready
@@ -966,7 +966,7 @@ curl http://localhost:8000/ready
 GET /health
 ```
 
-**Response (Stage 13):**
+**Response:**
 
 ```json
 {
@@ -1108,7 +1108,7 @@ GET /admin/slowest-jobs?k=10
 GET /admin/workers
 ```
 
-With Stage 13 Compose you typically see **seven** workers (one per type), each with `worker_type` set from `WORKER_TYPE`. Stage 12 Kubernetes manifests still deploy five workers until updated.
+With Compose you typically see **seven** workers (one per type), each with `worker_type` set from `WORKER_TYPE`. Kubernetes manifests currently deploy five workers (no RAG workers yet).
 
 **Response:**
 
@@ -1216,11 +1216,11 @@ All `POST /jobs` requests accept an optional `priority` field:
 | `"normal"` | `5` | Default |
 | `"low"` | `9` | Processed last within that job-type queue |
 
-**Routing (Stage 11):** queue name = `job_type` (e.g. `ocr`). Priority does **not** choose a separate `high`/`normal`/`low` queue anymore.
+**Routing:** queue name = `job_type` (e.g. `ocr`). Priority orders work inside that queue; it does not select a separate `high`/`normal`/`low` queue.
 
 ---
 
-## 11. Rate Limiting (Stage 8)
+## 11. Rate Limiting
 
 All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
 
@@ -1281,15 +1281,15 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 ## Notes
 
-- **Stage 13 (Naive RAG):** Use `docker compose up -d`. Postgres image is `pgvector/pgvector:pg16` with `CREATE EXTENSION vector`. Workers include `worker-ingestion` and `worker-rag-query`. Ingest via `POST /documents/ingest`, then ask via `POST /rag/query` (async) or `POST /rag/query/sync` (direct answer). First ingestion/RAG jobs download embedding (~80MB) and BART (~1.6GB) models.
-- **Stage 12 (Kubernetes):** Run `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. Current K8s manifests still deploy five workers and non-pgvector Postgres — update before using RAG on K8s. Scale a worker type: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
-- **Stage 11+ workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, ingestion by `worker-ingestion`, etc. Check `docker compose logs worker-<type>` (Compose) or `kubectl logs -l worker-type=<type>` (K8s) if a job stays `pending`.
+- **RAG (Compose):** Use `docker compose up -d`. Postgres image is `pgvector/pgvector:pg16` with `CREATE EXTENSION vector`. Workers include `worker-ingestion` and `worker-rag-query`. Ingest via `POST /documents/ingest`, then ask via `POST /rag/query` (async) or `POST /rag/query/sync` (direct answer). First ingestion/RAG jobs download embedding (~80MB) and BART (~1.6GB) models.
+- **Kubernetes:** Run `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. Manifests currently deploy five workers and non-pgvector Postgres — use Compose for RAG. Scale a worker type: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
+- **Workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, ingestion by `worker-ingestion`, etc. Check `docker compose logs worker-<type>` (Compose) or `kubectl logs -l worker-type=<type>` (K8s) if a job stays `pending`.
 - **Summarization** and **Embeddings** download ML models on first use (~1.6GB and ~80MB). First job on that worker container is slow.
 - **OCR** requires Tesseract (installed in the Docker runtime image). Without it locally, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
 - **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (in Docker image) and `openai-whisper`. Model caches per container. Duration via mutagen; result includes `source.engine: "whisper"`.
 - **Transcription (text-only)** with `input.text` + `duration` still uses the simulated sliding-window path (no Whisper).
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
-- **RAG** reuses `all-MiniLM-L6-v2` for embeddings and BART for answer generation (naive Stage 13 quality). Prefer sync endpoint for demos; async for agents/heavy load.
+- **RAG** uses `all-MiniLM-L6-v2` for embeddings and BART for answer generation. Prefer sync for interactive demos; async for agents/heavy load.
 - **File uploads** are stored under `uploads/` (hash-sharded; Docker volume `upload_data`). Same file uploaded twice is deduplicated by SHA-256.
 - **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
 - **Backpressure** — `POST /jobs`, `POST /uploads/job`, `POST /documents/ingest`, and `POST /rag/query` reject with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).

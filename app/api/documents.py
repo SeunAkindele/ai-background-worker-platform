@@ -59,8 +59,6 @@ async def get_document_chunks(
     )
 
 
-# ─── ASYNC: returns job_id, poll GET /jobs/{id} ───────────────────────
-
 @rag_router.post(
     "/query",
     response_model=RAGQueryResponse,
@@ -72,10 +70,9 @@ async def rag_query_async(
     _client: str = Depends(enforce_rate_limit),
     _pending: None = Depends(enforce_pending_limit),
 ):
+    """Enqueue a RAG query job; poll GET /jobs/{id} for the result."""
     return await document_service.submit_rag_query(db, payload)
 
-
-# ─── SYNC: returns answer immediately ────────────────────────────────
 
 @rag_router.post(
     "/query/sync",
@@ -86,9 +83,5 @@ async def rag_query_sync(
     payload: RAGQueryRequest,
     _client: str = Depends(enforce_rate_limit),
 ):
-    """
-    ChatGPT-style: ask a question, get the answer in the same response.
-
-    No job_id. No polling. Blocks until RAG finishes (typically 2-10s).
-    """
+    """Run RAG inline and return the answer in the same response."""
     return await document_service.run_rag_query_sync(payload)
