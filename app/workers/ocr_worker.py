@@ -1,6 +1,4 @@
-"""
-OCR Worker — Stage 6 + Stage 9 file uploads.
-"""
+"""OCR handler for images, batches, and uploaded files."""
 from pathlib import Path
 from typing import Any, Generator
 

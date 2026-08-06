@@ -56,23 +56,7 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def get_async_db():
-    """
-    FastAPI dependency — yields an async DB session.
-    Python Internals Focus:
-    -----------------------
-    This is an async generator (has `yield` inside an `async def`).
-    FastAPI detects this and uses it as an async context manager dependency.
-    When you write:
-        async def my_route(db: AsyncSession = Depends(get_async_db)):
-    FastAPI does (conceptually):
-        async with contextmanager(get_async_db)() as db:
-            response = await my_route(db=db)
-    The yield pauses the generator, hands db to the route, and resumes
-    after the route finishes (to run the finally block).
-    expire_on_commit=False above means attributes on ORM objects remain
-    accessible after commit without triggering a lazy load (which would
-    fail outside the session context).
-    """
+    """FastAPI dependency — yields an async DB session for the request."""
     async with AsyncSessionLocal() as session:
         try:
             yield session

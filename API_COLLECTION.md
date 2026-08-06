@@ -2,7 +2,7 @@
 
 Base URL: `http://localhost:8000`
 
-> **Stage 11 (split workers):** With `docker compose up`, five Celery workers run (one per job type) from the **same image**. HTTP request/response shapes are unchanged except **`GET /health`**. Jobs are routed to a Redis queue named after `job_type`; `priority` still controls ordering inside that queue (Celery integers 0 / 5 / 9).
+> With `docker compose up`, five Celery workers run (one per job type) from the **same image**. HTTP request/response shapes are unchanged except **`GET /health`**. Jobs are routed to a Redis queue named after `job_type`; `priority` still controls ordering inside that queue (Celery integers 0 / 5 / 9).
 
 ---
 
@@ -221,7 +221,7 @@ Content-Type: application/json
 }
 ```
 
-### 3c. File Upload (recommended — Stage 9)
+### 3c. File Upload (recommended)
 
 **Step 1 — Upload the file:**
 
@@ -399,7 +399,7 @@ Content-Type: application/json
 }
 ```
 
-### 4d. File Upload + Whisper (Stage 9)
+### 4d. File Upload + Whisper
 
 **Step 1 — Upload audio/video:**
 
@@ -588,7 +588,7 @@ Content-Type: application/json
 
 ---
 
-## 6. File Upload Endpoints (Stage 9)
+## 6. File Upload Endpoints
 
 ### Upload a file
 
@@ -682,7 +682,7 @@ GET /jobs?skip=0&limit=10
 GET /health
 ```
 
-**Response (Stage 11):**
+**Response:**
 
 ```json
 {
@@ -822,7 +822,7 @@ GET /admin/slowest-jobs?k=10
 GET /admin/workers
 ```
 
-With Stage 11 Compose you typically see **five** workers (one per type), each with `worker_type` set from `WORKER_TYPE`.
+With Compose you typically see **five** workers (one per type), each with `worker_type` set from `WORKER_TYPE`.
 
 **Response:**
 
@@ -910,11 +910,11 @@ All `POST /jobs` requests accept an optional `priority` field:
 | `"normal"` | `5` | Default |
 | `"low"` | `9` | Processed last within that job-type queue |
 
-**Routing (Stage 11):** queue name = `job_type` (e.g. `ocr`). Priority does **not** choose a separate `high`/`normal`/`low` queue anymore.
+**Routing:** queue name = `job_type` (e.g. `ocr`). Priority does **not** choose a separate `high`/`normal`/`low` queue anymore.
 
 ---
 
-## 10. Rate Limiting (Stage 8)
+## 10. Rate Limiting
 
 All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
 
@@ -975,7 +975,7 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 ## Notes
 
-- **Stage 11 workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, etc. Check `docker compose logs worker-<type>` if a job stays `pending`.
+- **Per-type workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, etc. Check `docker compose logs worker-<type>` if a job stays `pending`.
 - **Summarization** and **Embeddings** download ML models on first use (~1.6GB and ~80MB). First job on that worker container is slow.
 - **OCR** requires Tesseract (installed in the Docker runtime image). Without it locally, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
 - **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (in Docker image) and `openai-whisper`. Model caches per container. Duration via mutagen; result includes `source.engine: "whisper"`.
