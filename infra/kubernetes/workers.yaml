@@ -1,10 +1,8 @@
-# Shared pattern: same image, different WORKER_TYPE + celery --queues
-# Scale OCR without scaling summarization: change that Deployment's replicas / HPA.
-#
-# Resource strategy (Stage 12):
+# Same image, different WORKER_TYPE + celery --queues.
+# Resource hints:
 #   summarization / transcription — ML-heavy (BART, Whisper) → ~2Gi memory limit
-#   ocr                             — CPU-bound, reads uploaded files → uploads PVC
-#   embeddings / recommendations    — lighter models, text-only input → no uploads PVC
+#   ocr — CPU-bound, reads uploaded files → uploads PVC
+#   embeddings / recommendations — lighter models, text-only → no uploads PVC
 
 apiVersion: apps/v1
 kind: Deployment

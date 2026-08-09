@@ -86,9 +86,5 @@ async def rag_query_sync(
     payload: RAGQueryRequest,
     _client: str = Depends(enforce_rate_limit),
 ):
-    """
-    ChatGPT-style: ask a question, get the answer in the same response.
-
-    No job_id. No polling. Blocks until RAG finishes (typically 2-10s).
-    """
+    """Run a RAG query synchronously and return the answer in one response."""
     return await document_service.run_rag_query_sync(payload)

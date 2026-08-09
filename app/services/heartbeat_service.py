@@ -25,16 +25,7 @@ class HeartbeatService:
         update_type: bool = True,
         update_status: bool = True,
     ) -> WorkerHeartbeat:
-        """
-        Shared upsert logic for beat() and pulse().
-
-        DSA: This is a hash map "put" operation conceptually.
-        worker_name is the key, the heartbeat row is the value.
-        The unique index on worker_name gives O(log n) lookup.
-
-        update_type=False  → preserve existing worker_type (used by pulse)
-        update_status=False → preserve existing status + current_job_id (used by pulse)
-        """
+        """Upsert a heartbeat row by worker_name."""
         existing = (
             db.query(WorkerHeartbeat)
             .filter(WorkerHeartbeat.worker_name == worker_name)
@@ -135,13 +126,7 @@ class HeartbeatService:
         return db.query(WorkerHeartbeat).all()
 
     def mark_stale_workers_offline(self, db: Session) -> int:
-        """
-        Any worker that hasn't sent a heartbeat within HEARTBEAT_TIMEOUT
-        is considered offline. Returns count of workers marked offline.
-
-        DSA: This is a sliding window check — we look at a fixed time window
-        (now - timeout) and mark everything outside it as stale.
-        """
+        """Mark workers offline if last_seen_at is older than HEARTBEAT_TIMEOUT."""
         cutoff = datetime.now(timezone.utc) - HEARTBEAT_TIMEOUT
         stale_workers = (
             db.query(WorkerHeartbeat)

@@ -1,41 +1,5 @@
-"""
-Rate limiter using Redis sliding window counter.
+"""Redis sliding-window rate limiter."""
 
-DSA Focus:
-----------
-Sliding window counter — a hybrid between fixed window and sliding log.
-
-Algorithm:
-1. Divide time into fixed windows (e.g., 60-second windows)
-2. Track the current window count AND the previous window count
-3. Estimate current rate = prev_count * overlap_fraction + curr_count
-
-Time complexity: O(1) per check (2 Redis GETs + 1 INCR)
-Space complexity: O(1) per user (2 keys at any time)
-
-Why not a simple fixed window?
-- Fixed window has a burst problem at window boundaries.
-  A user could make 20 requests at second 59 and 20 more at second 61,
-  effectively doing 40 in 2 seconds while the limit is 20/minute.
-- Sliding window smooths this out.
-
-Alternative: Token bucket
-- Tokens refill at a steady rate
-- Each request consumes a token
-- Allows controlled bursts (bucket capacity)
-- More complex to implement correctly in distributed systems
-
-We use sliding window counter here because:
-- Simple to implement with Redis
-- Accurate enough for our use case
-- No race conditions with INCR (atomic)
-
-Python Internals Focus:
------------------------
-- time.time() returns a float (C double underneath) — Unix epoch seconds
-- int() truncation for window alignment
-- The // operator does floor division (same as int(a/b) for positive numbers)
-"""
 import time
 
 from app.config import settings

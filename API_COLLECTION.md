@@ -2,11 +2,9 @@
 
 Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` (Kubernetes NodePort) or `http://localhost:8000` after `kubectl port-forward svc/api 8000:8000`
 
-> **Stage 13 (Naive RAG):** Compose runs **seven** Celery workers (one per job type), including `ingestion` and `rag_query`. Postgres uses **pgvector**. New HTTP endpoints: `POST /documents/ingest`, `GET /documents/{id}`, `GET /documents/{id}/chunks`, `POST /rag/query` (async job), `POST /rag/query/sync` (answer in the same response). Prefer Compose for Stage 13; Kubernetes manifests still reflect Stage 12 (five workers, no pgvector) until updated later.
+> **Advanced RAG (Compose):** Multi-query expand, metadata filters, cross-encoder rerank, small-to-big parent/child chunks, and optional Celery chain mode (`use_chain: true` on `POST /rag/query`). Chain step job types: `query_expand`, `rerank`, `rag_retrieve`, `rag_generate`. Chunk list responses include `level` / `parent_chunk_id`. Compose runs dedicated workers per primary job type (including `ingestion` and `rag_query`) against Postgres with **pgvector**.
 >
-> **Stage 12 (Kubernetes):** The same core HTTP API runs on Kubernetes. Deploy with `kubectl apply -k infra/kubernetes/`. Five worker Deployments consume one queue each; the API Service exposes NodePort `30080`. Kubernetes probes hit `GET /ready`.
->
-> **Stage 11 (split workers):** With `docker compose up`, workers share the **same image**. Jobs are routed to a Redis queue named after `job_type`; `priority` still controls ordering inside that queue (Celery integers 0 / 5 / 9).
+> **Deployments:** With `docker compose up`, workers share the **same image**; jobs route to a Redis queue named after `job_type`, with `priority` ordering inside that queue (Celery integers 0 / 5 / 9). Kubernetes (`kubectl apply -k infra/kubernetes/`) exposes the API on NodePort `30080` with readiness via `GET /ready`; current manifests deploy a smaller worker set than Compose (update before relying on RAG on K8s).
 
 ---
 
@@ -21,13 +19,13 @@ Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` 
 | `POST` | `/uploads` | Upload a file (`multipart`: `file`, `purpose`) |
 | `POST` | `/uploads/job` | Upload + create OCR/transcription job (one-shot) |
 | `GET` | `/uploads/{file_id}` | Upload metadata by file UUID |
-| `POST` | `/documents/ingest` | Ingest a document into the RAG knowledge base (Stage 13) |
-| `GET` | `/documents/{document_id}` | Get document metadata/status (Stage 13) |
-| `GET` | `/documents/{document_id}/chunks` | List chunks for a document (Stage 13) |
-| `POST` | `/rag/query` | Async RAG query — returns `job_id` (Stage 13) |
-| `POST` | `/rag/query/sync` | Sync RAG query — returns answer in one response (Stage 13) |
+| `POST` | `/documents/ingest` | Ingest a document into the RAG knowledge base |
+| `GET` | `/documents/{document_id}` | Get document metadata/status |
+| `GET` | `/documents/{document_id}/chunks` | List chunks (`level`, `parent_chunk_id` for small-to-big) |
+| `POST` | `/rag/query` | Async RAG — inline or Celery chain (`use_chain`) |
+| `POST` | `/rag/query/sync` | Sync advanced RAG — answer in one response (no chain) |
 | `GET` | `/health` | Health check (per-type queue sizes) |
-| `GET` | `/ready` | Readiness probe (Kubernetes; Stage 12) |
+| `GET` | `/ready` | Readiness probe (Kubernetes) |
 | `GET` | `/admin/dashboard` | Full system overview (jobs, workers, queues) |
 | `GET` | `/admin/jobs/{job_id}/logs` | Audit trail / logs for a specific job |
 | `GET` | `/admin/errors` | Recent error logs across all jobs |
@@ -231,7 +229,7 @@ Content-Type: application/json
 }
 ```
 
-### 3c. File Upload (recommended — Stage 9)
+### 3c. File Upload (recommended)
 
 **Step 1 — Upload the file:**
 
@@ -409,7 +407,7 @@ Content-Type: application/json
 }
 ```
 
-### 4d. File Upload + Whisper (Stage 9)
+### 4d. File Upload + Whisper
 
 **Step 1 — Upload audio/video:**
 
@@ -598,9 +596,9 @@ Content-Type: application/json
 
 ---
 
-## 6. Document Ingestion & RAG (Stage 13)
+## 6. Document Ingestion & Advanced RAG
 
-Naive RAG flow: **ingest documents** → store chunk embeddings in Postgres/pgvector → **ask questions** against retrieved context.
+Flow: **ingest documents** → store parent/child chunks + child embeddings in Postgres/pgvector → **ask questions** with expand → retrieve → rerank → small-to-big → generate.
 
 ### 6a. Ingest a document
 
@@ -618,6 +616,7 @@ Content-Type: application/json
   "source": "text",
   "metadata": {
     "author": "docs team",
+    "department": "engineering",
     "category": "python"
   },
   "chunk_size": 512,
@@ -643,7 +642,7 @@ Content-Type: application/json
     "title": "Python Asyncio Guide",
     "source": "text",
     "status": "pending",
-    "metadata": {"author": "docs team", "category": "python"},
+    "metadata": {"author": "docs team", "department": "engineering", "category": "python"},
     "chunk_size": 512,
     "chunk_overlap": 50,
     "created_at": "2026-08-04T12:00:00Z",
@@ -654,7 +653,7 @@ Content-Type: application/json
 }
 ```
 
-Poll `GET /jobs/{job_id}` until `status` is `completed`. Document status becomes `ready` when chunks + embeddings are stored.
+Poll `GET /jobs/{job_id}` until `status` is `completed`. Document status becomes `ready` when chunks + embeddings are stored. Ingestion writes **parent** and **child** chunks; only children are embedded for ANN search.
 
 **Expected `result_payload` (ingestion job):**
 
@@ -662,7 +661,7 @@ Poll `GET /jobs/{job_id}` until `status` is `completed`. Document status becomes
 {
   "document_id": "550e8400-e29b-41d4-a716-446655440000",
   "title": "Python Asyncio Guide",
-  "chunks_created": 1,
+  "chunks_created": 4,
   "embedding_dimensions": 384,
   "model": "all-MiniLM-L6-v2",
   "status": "ready"
@@ -676,6 +675,7 @@ curl -X POST http://localhost:8000/documents/ingest \
     "title": "Python Asyncio Guide",
     "content": "Asyncio is a library to write concurrent code using async/await...",
     "source": "text",
+    "metadata": {"department": "engineering"},
     "chunk_size": 512,
     "chunk_overlap": 50
   }'
@@ -695,7 +695,7 @@ GET /documents/{document_id}
 GET /documents/{document_id}/chunks?skip=0&limit=50
 ```
 
-**Response (200):**
+**Response (200)** — includes `level` and `parent_chunk_id` for small-to-big inspection:
 
 ```json
 {
@@ -706,16 +706,18 @@ GET /documents/{document_id}/chunks?skip=0&limit=50
       "content": "Asyncio is a library to write concurrent code...",
       "chunk_index": 0,
       "token_count": 42,
+      "level": "child",
+      "parent_chunk_id": "880e8400-e29b-41d4-a716-446655440099",
       "metadata": {"start_word": 0, "end_word": 30},
       "created_at": "2026-08-04T12:00:05Z"
     }
   ],
-  "total": 1,
+  "total": 4,
   "document_id": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
-### 6d. Async RAG query (returns job_id)
+### 6d. Async RAG query — inline (default)
 
 ```
 POST /rag/query
@@ -727,29 +729,44 @@ Content-Type: application/json
 ```json
 {
   "question": "How does Python asyncio work?",
-  "top_k": 5,
-  "document_ids": ["550e8400-e29b-41d4-a716-446655440000"]
+  "retrieve_k": 50,
+  "keep_top_n": 3,
+  "document_ids": ["550e8400-e29b-41d4-a716-446655440000"],
+  "metadata_filter": {"department": "engineering"},
+  "use_multi_query": true,
+  "use_rerank": true,
+  "use_small_to_big": true,
+  "use_chain": false
 }
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `question` | yes | Question to answer (1–2000 chars) |
-| `top_k` | no | Chunks to retrieve (default `5`, range 1–50) |
+| `retrieve_k` | no | Candidate pool size before rerank (default `50`, range 1–100) |
+| `keep_top_n` | no | Chunks kept after rerank / for generation (default `3`, range 1–10) |
+| `top_k` | no | **Deprecated** alias; if set, overrides `retrieve_k` |
 | `document_ids` | no | Limit search to these document UUIDs |
+| `metadata_filter` | no | JSONB filter on chunk/document metadata, e.g. `{"department":"legal"}` |
+| `use_multi_query` | no | Expand question into variants (default `true`) |
+| `use_rerank` | no | Cross-encoder rerank of the candidate pool (default `true`) |
+| `use_small_to_big` | no | Expand selected children to parent text (default `true`) |
+| `use_chain` | no | `false` (default) = one `rag_query` job; `true` = Celery chain (async only) |
 
-**Response (202 Accepted):**
+**Response (202 Accepted) — inline:**
 
 ```json
 {
   "job_id": "770e8400-e29b-41d4-a716-446655440002",
-  "message": "RAG query submitted"
+  "message": "RAG query submitted (inline)",
+  "mode": "inline",
+  "step_job_ids": null
 }
 ```
 
 Poll `GET /jobs/{job_id}` for the answer.
 
-**Expected `result_payload` (rag_query job):**
+**Expected `result_payload` (inline `rag_query` job):**
 
 ```json
 {
@@ -762,29 +779,85 @@ Poll `GET /jobs/{job_id}` for the answer.
       "document_title": "Python Asyncio Guide",
       "chunk_index": 0,
       "similarity": 0.82,
-      "text_preview": "Asyncio is a library to write concurrent code..."
+      "rerank_score": 0.91,
+      "text_preview": "Asyncio is a library to write concurrent code...",
+      "expanded_from_child": true
     }
   ],
-  "chunks_retrieved": 1,
-  "top_k_requested": 5,
-  "model": "all-MiniLM-L6-v2"
+  "chunks_retrieved": 3,
+  "retrieve_k": 50,
+  "keep_top_n": 3,
+  "queries_used": ["How does Python asyncio work?", "...", "..."],
+  "model": "all-MiniLM-L6-v2",
+  "observability": {}
 }
 ```
 
 ```bash
 curl -X POST http://localhost:8000/rag/query \
   -H "Content-Type: application/json" \
-  -d '{"question":"How does Python asyncio work?","top_k":5}'
+  -d '{
+    "question": "How does Python asyncio work?",
+    "retrieve_k": 50,
+    "keep_top_n": 3,
+    "use_multi_query": true,
+    "use_rerank": true
+  }'
 ```
 
-### 6e. Sync RAG query (ChatGPT-style — answer in one response)
+### 6e. Async RAG query — Celery chain (`use_chain: true`)
+
+Creates a parent `rag_query` job plus step jobs: `query_expand` → `rag_retrieve` → `rerank` → `rag_generate`. Poll the **parent** `job_id` for the final answer; use `step_job_ids` to debug individual stages.
+
+```json
+{
+  "question": "How does Python asyncio work?",
+  "retrieve_k": 50,
+  "keep_top_n": 3,
+  "use_chain": true
+}
+```
+
+**Response (202 Accepted) — chain:**
+
+```json
+{
+  "job_id": "770e8400-e29b-41d4-a716-446655440002",
+  "message": "RAG query submitted (Celery chain)",
+  "mode": "chain",
+  "step_job_ids": {
+    "expand": "880e8400-e29b-41d4-a716-446655440010",
+    "retrieve": "880e8400-e29b-41d4-a716-446655440011",
+    "rerank": "880e8400-e29b-41d4-a716-446655440012",
+    "generate": "880e8400-e29b-41d4-a716-446655440013"
+  }
+}
+```
+
+```bash
+curl -X POST http://localhost:8000/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"How does Python asyncio work?","use_chain":true}'
+```
+
+> Chain mode requires workers listening on `query_expand`, `rag_retrieve`, `rerank`, and `rag_generate` (or a local worker that includes those queues). Compose `worker-rag-query` handles inline `rag_query`; for chain demos locally, broaden that worker’s `--queues` list.
+
+### 6f. Sync RAG query (answer in one response)
 
 ```
 POST /rag/query/sync
 Content-Type: application/json
 ```
 
-Same request body as `6d`. Returns **200** with the answer directly (no `job_id`). Blocks until embed → retrieve → generate finishes (often 2–10s). Uses the same `RAGQueryHandler` logic as the async worker.
+Same request body as `6d`, **except** `use_chain` must be `false` / omitted. Returns **200** with the answer directly (no `job_id`). Blocks until the advanced pipeline finishes (often 2–10s+). Uses the same `RAGQueryHandler` as inline async.
+
+**Error (400)** if `use_chain: true`:
+
+```json
+{
+  "detail": "use_chain is only supported on POST /rag/query (async)"
+}
+```
 
 **Response (200):**
 
@@ -802,8 +875,8 @@ Same request body as `6d`. Returns **200** with the answer directly (no `job_id`
       "text_preview": "Asyncio is a library..."
     }
   ],
-  "chunks_retrieved": 1,
-  "top_k_requested": 5,
+  "chunks_retrieved": 3,
+  "top_k_requested": null,
   "model": "all-MiniLM-L6-v2"
 }
 ```
@@ -811,10 +884,15 @@ Same request body as `6d`. Returns **200** with the answer directly (no `job_id`
 ```bash
 curl -X POST http://localhost:8000/rag/query/sync \
   -H "Content-Type: application/json" \
-  -d '{"question":"How does Python asyncio work?","top_k":5}'
+  -d '{
+    "question": "How does Python asyncio work?",
+    "retrieve_k": 50,
+    "keep_top_n": 3,
+    "metadata_filter": {"department": "engineering"}
+  }'
 ```
 
-### 6f. Create ingestion / rag_query jobs via `POST /jobs`
+### 6g. Create ingestion / rag_query jobs via `POST /jobs`
 
 You can also enqueue these job types through the generic jobs API:
 
@@ -836,16 +914,20 @@ You can also enqueue these job types through the generic jobs API:
   "priority": "normal",
   "input": {
     "question": "How does Python asyncio work?",
-    "top_k": 5
+    "retrieve_k": 50,
+    "keep_top_n": 3,
+    "use_multi_query": true,
+    "use_rerank": true,
+    "use_small_to_big": true
   }
 }
 ```
 
-Prefer `POST /documents/ingest` and `POST /rag/query` — they create the document row / validate input for you.
+Chain steps use job types `query_expand`, `rerank`, `rag_retrieve`, and `rag_generate`. Prefer `POST /documents/ingest` and `POST /rag/query` — they create the document row, validate input, and wire the chain.
 
 ---
 
-## 7. File Upload Endpoints (Stage 9)
+## 7. File Upload Endpoints
 
 ### Upload a file
 
@@ -933,7 +1015,7 @@ GET /jobs?skip=0&limit=10
 
 ## 10. Health & Admin
 
-### Readiness Check (Stage 12)
+### Readiness Check
 
 ```
 GET /ready
@@ -966,7 +1048,7 @@ curl http://localhost:8000/ready
 GET /health
 ```
 
-**Response (Stage 13):**
+**Response:**
 
 ```json
 {
@@ -978,7 +1060,11 @@ GET /health
     "transcription": 0,
     "recommendations": 0,
     "ingestion": 0,
-    "rag_query": 0
+    "rag_query": 0,
+    "query_expand": 0,
+    "rerank": 0,
+    "rag_retrieve": 0,
+    "rag_generate": 0
   },
   "total_queued": 0
 }
@@ -1108,7 +1194,7 @@ GET /admin/slowest-jobs?k=10
 GET /admin/workers
 ```
 
-With Stage 13 Compose you typically see **seven** workers (one per type), each with `worker_type` set from `WORKER_TYPE`. Stage 12 Kubernetes manifests still deploy five workers until updated.
+Compose typically runs **seven** workers (one per primary type), each with `worker_type` from `WORKER_TYPE`. Chain step queues (`query_expand`, `rerank`, `rag_retrieve`, `rag_generate`) exist even without a dedicated Deployment per step. Current Kubernetes manifests still deploy five workers until updated for RAG.
 
 **Response:**
 
@@ -1216,11 +1302,11 @@ All `POST /jobs` requests accept an optional `priority` field:
 | `"normal"` | `5` | Default |
 | `"low"` | `9` | Processed last within that job-type queue |
 
-**Routing (Stage 11):** queue name = `job_type` (e.g. `ocr`). Priority does **not** choose a separate `high`/`normal`/`low` queue anymore.
+**Routing:** queue name = `job_type` (e.g. `ocr`). Priority orders within that queue; it does not select a separate `high`/`normal`/`low` queue.
 
 ---
 
-## 11. Rate Limiting (Stage 8)
+## 11. Rate Limiting
 
 All endpoints are protected by a sliding window rate limiter. Default: **20 requests per 60 seconds** per client IP.
 
@@ -1281,15 +1367,16 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 ## Notes
 
-- **Stage 13 (Naive RAG):** Use `docker compose up -d`. Postgres image is `pgvector/pgvector:pg16` with `CREATE EXTENSION vector`. Workers include `worker-ingestion` and `worker-rag-query`. Ingest via `POST /documents/ingest`, then ask via `POST /rag/query` (async) or `POST /rag/query/sync` (direct answer). First ingestion/RAG jobs download embedding (~80MB) and BART (~1.6GB) models.
-- **Stage 12 (Kubernetes):** Run `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. Current K8s manifests still deploy five workers and non-pgvector Postgres — update before using RAG on K8s. Scale a worker type: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
-- **Stage 11+ workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, ingestion by `worker-ingestion`, etc. Check `docker compose logs worker-<type>` (Compose) or `kubectl logs -l worker-type=<type>` (K8s) if a job stays `pending`.
+- **Advanced RAG:** Ingest/query via `POST /documents/ingest` and `POST /rag/query` (or `/sync`) with `retrieve_k` / `keep_top_n`, `metadata_filter`, `use_multi_query`, `use_rerank`, `use_small_to_big`, and optional `use_chain` on async query. Existing DB volumes need `init-db/02-stage14-jobtype-enum.sql` once for new enum values.
+- **Compose:** `docker compose up -d`. Postgres is `pgvector/pgvector:pg16` with `CREATE EXTENSION vector`. Workers include `worker-ingestion` and `worker-rag-query`. First ingestion/RAG jobs download embedding (~80MB) and BART (~1.6GB) models.
+- **Kubernetes:** `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. Current manifests still deploy five workers and non-pgvector Postgres — update before using RAG on K8s. Scale: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
+- **Workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, ingestion by `worker-ingestion`, etc. Check `docker compose logs worker-<type>` or `kubectl logs -l worker-type=<type>` if a job stays `pending`.
 - **Summarization** and **Embeddings** download ML models on first use (~1.6GB and ~80MB). First job on that worker container is slow.
 - **OCR** requires Tesseract (installed in the Docker runtime image). Without it locally, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.
 - **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (in Docker image) and `openai-whisper`. Model caches per container. Duration via mutagen; result includes `source.engine: "whisper"`.
 - **Transcription (text-only)** with `input.text` + `duration` still uses the simulated sliding-window path (no Whisper).
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
-- **RAG** reuses `all-MiniLM-L6-v2` for embeddings and BART for answer generation (naive Stage 13 quality). Prefer sync endpoint for demos; async for agents/heavy load.
+- **RAG** uses `all-MiniLM-L6-v2` for embeddings and BART for answer generation, plus expand/rerank/small-to-big. Prefer sync for demos; async inline for agents; `use_chain: true` for per-step jobs.
 - **File uploads** are stored under `uploads/` (hash-sharded; Docker volume `upload_data`). Same file uploaded twice is deduplicated by SHA-256.
 - **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
 - **Backpressure** — `POST /jobs`, `POST /uploads/job`, `POST /documents/ingest`, and `POST /rag/query` reject with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).

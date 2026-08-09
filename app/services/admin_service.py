@@ -18,30 +18,10 @@ from app.services.heartbeat_service import heartbeat_service
 
 
 class AdminService:
-    # ==============================================================
-    # ASYNC methods — used by FastAPI routes
-    # ==============================================================
+    # Async methods used by FastAPI routes
 
     async def async_get_dashboard(self, db: AsyncSession) -> DashboardResponse:
-        """
-        Python Internals Focus:
-        -----------------------
-        Multiple awaits in sequence:
-            status_counts = await ...
-            avg_seconds = await ...
-            slowest = await ...
-
-        Each `await` is a suspension point. The event loop can interleave
-        other coroutines between them. This is cooperative multitasking:
-        coroutines explicitly yield control at await points.
-
-        If you wanted these queries to run in PARALLEL (not just concurrently
-        with other requests, but truly overlapping each other), you'd use:
-            results = await asyncio.gather(query1, query2, query3)
-
-        But for DB queries on the same connection, sequential is usually fine
-        because PostgreSQL processes queries from one connection serially anyway.
-        """
+        """Aggregate job counts, timing stats, queue size, and worker health."""
         stmt = (
             select(Job.status, func.count(Job.id))
             .group_by(Job.status)
@@ -75,9 +55,7 @@ class AdminService:
     async def async_get_top_k_slowest_jobs(
         self, db: AsyncSession, skip: int = 0, limit: int = 10
     ) -> list[TopKJobResponse]:
-        """
-        DSA: Top-K using a min-heap (same logic as sync version).
-        """
+        """Return the slowest completed jobs (paginated)."""
         stmt = (
             select(
                 Job.id,

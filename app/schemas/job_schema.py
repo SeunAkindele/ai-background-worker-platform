@@ -14,20 +14,13 @@ class JobCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_input_for_job_type(self):
-        """
-        Validate that input payload matches what the job type expects.
-
-        This is a "fail fast at the API boundary" pattern:
-        reject invalid jobs BEFORE they reach the queue/worker.
-        Saves compute, gives instant feedback to the user.
-        """
+        """Validate that input payload matches what the job type expects."""
         validators = {
             JobType.SUMMARIZATION: self._validate_summarization,
             JobType.EMBEDDINGS: self._validate_embeddings,
             JobType.OCR: self._validate_ocr,
             JobType.TRANSCRIPTION: self._validate_transcription,
             JobType.RECOMMENDATIONS: self._validate_recommendations,
-            # Stage 13: new validators
             JobType.INGESTION: self._validate_ingestion,
             JobType.RAG_QUERY: self._validate_rag_query,
         }

@@ -1,1853 +1,1933 @@
 {
-    "openapi": "3.1.0",
-    "info": {
-        "title": "AI Background Worker Platform",
-        "version": "0.13.0"
-    },
-    "paths": {
-        "/jobs": {
-            "post": {
-                "tags": [
-                    "jobs"
-                ],
-                "summary": "Create Job",
-                "description": "Submit a new job.\n\nPython Internals Focus:\n-----------------------\nThis is now `async def` \u2014 it's a coroutine function.\nWhen FastAPI receives a request, it calls this function which returns\na coroutine object. The event loop schedules it and starts executing\nuntil the first `await` (inside async_create_job), at which point\nit suspends and can handle other requests.\n\nThe Depends() parameters create a dependency chain:\n1. get_async_db \u2192 opens DB session\n2. enforce_rate_limit \u2192 checks sliding window counter\n3. enforce_pending_limit \u2192 checks queue backpressure\n\nIf any dependency raises HTTPException, the route never executes.\nThis is the \"fail fast\" principle applied to the request lifecycle.",
-                "operationId": "create_job_jobs_post",
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/JobCreate"
-                            }
-                        }
-                    }
-                },
-                "responses": {
-                    "201": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/JobResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "get": {
-                "tags": [
-                    "jobs"
-                ],
-                "summary": "List Jobs",
-                "operationId": "list_jobs_jobs_get",
-                "parameters": [
-                    {
-                        "name": "skip",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Number of records to skip",
-                            "default": 0,
-                            "title": "Skip"
-                        },
-                        "description": "Number of records to skip"
-                    },
-                    {
-                        "name": "limit",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "maximum": 100,
-                            "minimum": 1,
-                            "description": "Max records to return",
-                            "default": 50,
-                            "title": "Limit"
-                        },
-                        "description": "Max records to return"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/JobListResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AI Background Worker Platform",
+    "version": "0.14.0"
+  },
+  "paths": {
+    "/jobs": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Create Job",
+        "description": "Submit a new job.",
+        "operationId": "create_job_jobs_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobCreate"
+              }
             }
+          }
         },
-        "/jobs/{job_id}": {
-            "get": {
-                "tags": [
-                    "jobs"
-                ],
-                "summary": "Get Job",
-                "description": "Poll job status.\n\nThis endpoint will be called frequently by clients waiting for results.\nBeing async means hundreds of polling requests can be in-flight\nsimultaneously without thread exhaustion.\n\nPython Internals:\nUUID in the path parameter \u2014 FastAPI uses Pydantic to parse the\nstring from the URL into a UUID object. If it's not a valid UUID,\nFastAPI returns 422 automatically.",
-                "operationId": "get_job_jobs__job_id__get",
-                "parameters": [
-                    {
-                        "name": "job_id",
-                        "in": "path",
-                        "required": true,
-                        "schema": {
-                            "type": "string",
-                            "format": "uuid",
-                            "title": "Job Id"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/JobResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
                 }
+              }
             }
-        },
-        "/jobs/{job_id}/file": {
-            "get": {
-                "tags": [
-                    "jobs"
-                ],
-                "summary": "Get Job File",
-                "description": "Return metadata for the file attached to this job, if any.",
-                "operationId": "get_job_file_jobs__job_id__file_get",
-                "parameters": [
-                    {
-                        "name": "job_id",
-                        "in": "path",
-                        "required": true,
-                        "schema": {
-                            "type": "string",
-                            "format": "uuid",
-                            "title": "Job Id"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/JobFileResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
+              }
             }
-        },
-        "/uploads": {
-            "post": {
-                "tags": [
-                    "uploads"
-                ],
-                "summary": "Upload File",
-                "description": "Upload a file for later use in a job.\n\nPython Internals Focus:\n-----------------------\nUploadFile wraps a SpooledTemporaryFile \u2014 small files stay in memory,\nlarge files spill to disk automatically. Our save_upload() still reads\nin chunks so we never call .read() without a size limit.\n\nDSA Focus:\nStream \u2192 hash \u2192 deduplicate. Memory stays O(chunk_size) not O(file_size).",
-                "operationId": "upload_file_uploads_post",
-                "requestBody": {
-                    "content": {
-                        "multipart/form-data": {
-                            "schema": {
-                                "$ref": "#/components/schemas/Body_upload_file_uploads_post"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "201": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/FileUploadResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/uploads/job": {
-            "post": {
-                "tags": [
-                    "uploads"
-                ],
-                "summary": "Create Job With Upload",
-                "description": "One-shot: upload file + create job.\n\nOnly OCR and transcription accept file uploads at this stage.",
-                "operationId": "create_job_with_upload_uploads_job_post",
-                "requestBody": {
-                    "content": {
-                        "multipart/form-data": {
-                            "schema": {
-                                "$ref": "#/components/schemas/Body_create_job_with_upload_uploads_job_post"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "201": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/JobResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/uploads/{file_id}": {
-            "get": {
-                "tags": [
-                    "uploads"
-                ],
-                "summary": "Get Upload Metadata",
-                "operationId": "get_upload_metadata_uploads__file_id__get",
-                "parameters": [
-                    {
-                        "name": "file_id",
-                        "in": "path",
-                        "required": true,
-                        "schema": {
-                            "type": "string",
-                            "format": "uuid",
-                            "title": "File Id"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/JobFileResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/dashboard": {
-            "get": {
-                "tags": [
-                    "admin"
-                ],
-                "summary": "Dashboard",
-                "operationId": "dashboard_admin_dashboard_get",
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/DashboardResponse"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/jobs/{job_id}/logs": {
-            "get": {
-                "tags": [
-                    "admin"
-                ],
-                "summary": "Get Job Logs",
-                "operationId": "get_job_logs_admin_jobs__job_id__logs_get",
-                "parameters": [
-                    {
-                        "name": "job_id",
-                        "in": "path",
-                        "required": true,
-                        "schema": {
-                            "type": "string",
-                            "format": "uuid",
-                            "title": "Job Id"
-                        }
-                    },
-                    {
-                        "name": "skip",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Number of records to skip",
-                            "default": 0,
-                            "title": "Skip"
-                        },
-                        "description": "Number of records to skip"
-                    },
-                    {
-                        "name": "limit",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "maximum": 500,
-                            "minimum": 1,
-                            "description": "Max records to return",
-                            "default": 100,
-                            "title": "Limit"
-                        },
-                        "description": "Max records to return"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/JobLogListResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/errors": {
-            "get": {
-                "tags": [
-                    "admin"
-                ],
-                "summary": "Recent Errors",
-                "operationId": "recent_errors_admin_errors_get",
-                "parameters": [
-                    {
-                        "name": "skip",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Number of records to skip",
-                            "default": 0,
-                            "title": "Skip"
-                        },
-                        "description": "Number of records to skip"
-                    },
-                    {
-                        "name": "limit",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "maximum": 500,
-                            "minimum": 1,
-                            "description": "Max records to return",
-                            "default": 50,
-                            "title": "Limit"
-                        },
-                        "description": "Max records to return"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/components/schemas/JobLogResponse"
-                                    },
-                                    "title": "Response Recent Errors Admin Errors Get"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/slowest-jobs": {
-            "get": {
-                "tags": [
-                    "admin"
-                ],
-                "summary": "Slowest Jobs",
-                "operationId": "slowest_jobs_admin_slowest_jobs_get",
-                "parameters": [
-                    {
-                        "name": "skip",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Number of records to skip",
-                            "default": 0,
-                            "title": "Skip"
-                        },
-                        "description": "Number of records to skip"
-                    },
-                    {
-                        "name": "limit",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "maximum": 100,
-                            "minimum": 1,
-                            "description": "Max records to return",
-                            "default": 10,
-                            "title": "Limit"
-                        },
-                        "description": "Max records to return"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/components/schemas/TopKJobResponse"
-                                    },
-                                    "title": "Response Slowest Jobs Admin Slowest Jobs Get"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/workers": {
-            "get": {
-                "tags": [
-                    "admin"
-                ],
-                "summary": "Worker Health",
-                "operationId": "worker_health_admin_workers_get",
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/WorkerHealthResponse"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/documents/ingest": {
-            "post": {
-                "tags": [
-                    "documents"
-                ],
-                "summary": "Ingest Document",
-                "operationId": "ingest_document_documents_ingest_post",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/DocumentIngestRequest"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "201": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/DocumentIngestResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/documents/{document_id}": {
-            "get": {
-                "tags": [
-                    "documents"
-                ],
-                "summary": "Get Document",
-                "operationId": "get_document_documents__document_id__get",
-                "parameters": [
-                    {
-                        "name": "document_id",
-                        "in": "path",
-                        "required": true,
-                        "schema": {
-                            "type": "string",
-                            "format": "uuid",
-                            "title": "Document Id"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/DocumentResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/documents/{document_id}/chunks": {
-            "get": {
-                "tags": [
-                    "documents"
-                ],
-                "summary": "Get Document Chunks",
-                "operationId": "get_document_chunks_documents__document_id__chunks_get",
-                "parameters": [
-                    {
-                        "name": "document_id",
-                        "in": "path",
-                        "required": true,
-                        "schema": {
-                            "type": "string",
-                            "format": "uuid",
-                            "title": "Document Id"
-                        }
-                    },
-                    {
-                        "name": "skip",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "default": 0,
-                            "title": "Skip"
-                        }
-                    },
-                    {
-                        "name": "limit",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "maximum": 100,
-                            "minimum": 1,
-                            "default": 50,
-                            "title": "Limit"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ChunkListResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/rag/query": {
-            "post": {
-                "tags": [
-                    "rag"
-                ],
-                "summary": "Rag Query Async",
-                "operationId": "rag_query_async_rag_query_post",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/RAGQueryRequest"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "202": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RAGQueryResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/rag/query/sync": {
-            "post": {
-                "tags": [
-                    "rag"
-                ],
-                "summary": "Rag Query Sync",
-                "description": "ChatGPT-style: ask a question, get the answer in the same response.\n\nNo job_id. No polling. Blocks until RAG finishes (typically 2-10s).",
-                "operationId": "rag_query_sync_rag_query_sync_post",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/RAGQueryRequest"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/RAGQuerySyncResponse"
-                                }
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/health": {
-            "get": {
-                "summary": "Health",
-                "description": "Health check showing per-queue job counts.\nStage 11 change:\nWith split workers, the old redis_client.llen(\"celery\") returns 0\nbecause there's no longer a single \"celery\" queue. Each job type\nhas its own queue. This endpoint now shows the size of each queue\nso you can see which worker types have backlogs.\nDSA Focus:\nThis is essentially a hash map of queue_name \u2192 size. Iterating\nover all queue names is O(k) where k = number of job types (5).\nEach llen call is O(1) in Redis (Redis stores list length as metadata).\nNote: redis_client is the sync client. For a handful of llen calls\n(each taking microseconds), blocking an async route is acceptable.",
-                "operationId": "health_health_get",
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {}
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/ready": {
-            "get": {
-                "summary": "Ready",
-                "description": "Stage 12: Kubernetes readiness probe target.\nLiveness = \"process is alive\" (don't kill if Redis is briefly slow).\nReadiness = \"safe to send traffic\" (fail if we can't serve requests).\nStart simple: always ok once the app started.\nStretch: ping Postgres/Redis and return 503 if down.",
-                "operationId": "ready_ready_get",
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {}
-                            }
-                        }
-                    }
-                }
-            }
+          }
         }
-    },
-    "components": {
-        "schemas": {
-            "Body_create_job_with_upload_uploads_job_post": {
-                "properties": {
-                    "job_type": {
-                        "$ref": "#/components/schemas/JobType"
-                    },
-                    "file": {
-                        "type": "string",
-                        "contentMediaType": "application/octet-stream",
-                        "title": "File"
-                    },
-                    "priority": {
-                        "$ref": "#/components/schemas/JobPriority",
-                        "default": "normal"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "job_type",
-                    "file"
-                ],
-                "title": "Body_create_job_with_upload_uploads_job_post"
+      },
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "List Jobs",
+        "operationId": "list_jobs_jobs_get",
+        "parameters": [
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of records to skip",
+              "default": 0,
+              "title": "Skip"
             },
-            "Body_upload_file_uploads_post": {
-                "properties": {
-                    "file": {
-                        "type": "string",
-                        "contentMediaType": "application/octet-stream",
-                        "title": "File"
-                    },
-                    "purpose": {
-                        "$ref": "#/components/schemas/FilePurpose"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "file",
-                    "purpose"
-                ],
-                "title": "Body_upload_file_uploads_post"
+            "description": "Number of records to skip"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Max records to return",
+              "default": 50,
+              "title": "Limit"
             },
-            "ChunkListResponse": {
-                "properties": {
-                    "chunks": {
-                        "items": {
-                            "$ref": "#/components/schemas/ChunkResponse"
-                        },
-                        "type": "array",
-                        "title": "Chunks"
-                    },
-                    "total": {
-                        "type": "integer",
-                        "title": "Total"
-                    },
-                    "document_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Document Id"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "chunks",
-                    "total",
-                    "document_id"
-                ],
-                "title": "ChunkListResponse"
-            },
-            "ChunkResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "document_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Document Id"
-                    },
-                    "content": {
-                        "type": "string",
-                        "title": "Content"
-                    },
-                    "chunk_index": {
-                        "type": "integer",
-                        "title": "Chunk Index"
-                    },
-                    "token_count": {
-                        "type": "integer",
-                        "title": "Token Count"
-                    },
-                    "metadata_": {
-                        "anyOf": [
-                            {
-                                "additionalProperties": true,
-                                "type": "object"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Metadata"
-                    },
-                    "created_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Created At"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "document_id",
-                    "content",
-                    "chunk_index",
-                    "token_count",
-                    "created_at"
-                ],
-                "title": "ChunkResponse"
-            },
-            "DashboardResponse": {
-                "properties": {
-                    "total_jobs": {
-                        "type": "integer",
-                        "title": "Total Jobs"
-                    },
-                    "pending_jobs": {
-                        "type": "integer",
-                        "title": "Pending Jobs"
-                    },
-                    "processing_jobs": {
-                        "type": "integer",
-                        "title": "Processing Jobs"
-                    },
-                    "completed_jobs": {
-                        "type": "integer",
-                        "title": "Completed Jobs"
-                    },
-                    "failed_jobs": {
-                        "type": "integer",
-                        "title": "Failed Jobs"
-                    },
-                    "avg_processing_seconds": {
-                        "anyOf": [
-                            {
-                                "type": "number"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Avg Processing Seconds"
-                    },
-                    "slowest_job_types": {
-                        "items": {
-                            "$ref": "#/components/schemas/JobTypeStats"
-                        },
-                        "type": "array",
-                        "title": "Slowest Job Types"
-                    },
-                    "queue_size": {
-                        "type": "integer",
-                        "title": "Queue Size"
-                    },
-                    "workers": {
-                        "$ref": "#/components/schemas/WorkerHealthResponse"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "total_jobs",
-                    "pending_jobs",
-                    "processing_jobs",
-                    "completed_jobs",
-                    "failed_jobs",
-                    "avg_processing_seconds",
-                    "slowest_job_types",
-                    "queue_size",
-                    "workers"
-                ],
-                "title": "DashboardResponse"
-            },
-            "DocumentIngestRequest": {
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "maxLength": 500,
-                        "minLength": 1,
-                        "title": "Title",
-                        "description": "Human-readable name for this document"
-                    },
-                    "content": {
-                        "type": "string",
-                        "minLength": 1,
-                        "title": "Content",
-                        "description": "The full text content to ingest"
-                    },
-                    "source": {
-                        "type": "string",
-                        "title": "Source",
-                        "description": "Where this document came from: 'text', 'upload', 'url'",
-                        "default": "text"
-                    },
-                    "metadata": {
-                        "anyOf": [
-                            {
-                                "additionalProperties": true,
-                                "type": "object"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Metadata",
-                        "description": "Optional metadata (author, department, tags, etc.)"
-                    },
-                    "chunk_size": {
-                        "type": "integer",
-                        "maximum": 2000.0,
-                        "minimum": 50.0,
-                        "title": "Chunk Size",
-                        "default": 512
-                    },
-                    "chunk_overlap": {
-                        "type": "integer",
-                        "maximum": 500.0,
-                        "minimum": 0.0,
-                        "title": "Chunk Overlap",
-                        "default": 50
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "title",
-                    "content"
-                ],
-                "title": "DocumentIngestRequest",
-                "description": "Request body for document ingestion.\n\nThe client sends the document text + metadata.\nThe API creates a Document row and dispatches an INGESTION job."
-            },
-            "DocumentIngestResponse": {
-                "properties": {
-                    "document": {
-                        "$ref": "#/components/schemas/DocumentResponse"
-                    },
-                    "job_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Job Id"
-                    },
-                    "message": {
-                        "type": "string",
-                        "title": "Message",
-                        "default": "Document submitted for ingestion"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "document",
-                    "job_id"
-                ],
-                "title": "DocumentIngestResponse",
-                "description": "Response after submitting a document for ingestion.\nIncludes both the document record and the job ID for polling."
-            },
-            "DocumentResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "title": {
-                        "type": "string",
-                        "title": "Title"
-                    },
-                    "source": {
-                        "type": "string",
-                        "title": "Source"
-                    },
-                    "status": {
-                        "type": "string",
-                        "title": "Status"
-                    },
-                    "metadata_": {
-                        "anyOf": [
-                            {
-                                "additionalProperties": true,
-                                "type": "object"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Metadata"
-                    },
-                    "chunk_size": {
-                        "type": "integer",
-                        "title": "Chunk Size"
-                    },
-                    "chunk_overlap": {
-                        "type": "integer",
-                        "title": "Chunk Overlap"
-                    },
-                    "created_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Created At"
-                    },
-                    "updated_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Updated At"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "title",
-                    "source",
-                    "status",
-                    "chunk_size",
-                    "chunk_overlap",
-                    "created_at",
-                    "updated_at"
-                ],
-                "title": "DocumentResponse"
-            },
-            "FilePurpose": {
-                "type": "string",
-                "enum": [
-                    "ocr",
-                    "transcription"
-                ],
-                "title": "FilePurpose",
-                "description": "What the uploaded file will be used for."
-            },
-            "FileUploadResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "original_filename": {
-                        "type": "string",
-                        "title": "Original Filename"
-                    },
-                    "file_type": {
-                        "type": "string",
-                        "title": "File Type"
-                    },
-                    "file_size": {
-                        "type": "integer",
-                        "title": "File Size"
-                    },
-                    "content_hash": {
-                        "type": "string",
-                        "title": "Content Hash"
-                    },
-                    "purpose": {
-                        "$ref": "#/components/schemas/FilePurpose"
-                    },
-                    "deduplicated": {
-                        "type": "boolean",
-                        "title": "Deduplicated",
-                        "description": "True if this upload matched an existing file by hash"
-                    },
-                    "created_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Created At"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "original_filename",
-                    "file_type",
-                    "file_size",
-                    "content_hash",
-                    "purpose",
-                    "deduplicated",
-                    "created_at"
-                ],
-                "title": "FileUploadResponse"
-            },
-            "HTTPValidationError": {
-                "properties": {
-                    "detail": {
-                        "items": {
-                            "$ref": "#/components/schemas/ValidationError"
-                        },
-                        "type": "array",
-                        "title": "Detail"
-                    }
-                },
-                "type": "object",
-                "title": "HTTPValidationError"
-            },
-            "JobCreate": {
-                "properties": {
-                    "job_type": {
-                        "$ref": "#/components/schemas/JobType"
-                    },
-                    "input": {
-                        "additionalProperties": true,
-                        "type": "object",
-                        "title": "Input",
-                        "description": "Job-specific input payload"
-                    },
-                    "priority": {
-                        "$ref": "#/components/schemas/JobPriority",
-                        "default": "normal"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "job_type",
-                    "input"
-                ],
-                "title": "JobCreate"
-            },
-            "JobFileResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "job_id": {
-                        "anyOf": [
-                            {
-                                "type": "string",
-                                "format": "uuid"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Job Id"
-                    },
-                    "original_filename": {
-                        "type": "string",
-                        "title": "Original Filename"
-                    },
-                    "file_type": {
-                        "type": "string",
-                        "title": "File Type"
-                    },
-                    "file_size": {
-                        "type": "integer",
-                        "title": "File Size"
-                    },
-                    "content_hash": {
-                        "type": "string",
-                        "title": "Content Hash"
-                    },
-                    "purpose": {
-                        "$ref": "#/components/schemas/FilePurpose"
-                    },
-                    "created_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Created At"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "job_id",
-                    "original_filename",
-                    "file_type",
-                    "file_size",
-                    "content_hash",
-                    "purpose",
-                    "created_at"
-                ],
-                "title": "JobFileResponse"
-            },
-            "JobListResponse": {
-                "properties": {
-                    "jobs": {
-                        "items": {
-                            "$ref": "#/components/schemas/JobResponse"
-                        },
-                        "type": "array",
-                        "title": "Jobs"
-                    },
-                    "total": {
-                        "type": "integer",
-                        "title": "Total"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "jobs",
-                    "total"
-                ],
-                "title": "JobListResponse"
-            },
-            "JobLogListResponse": {
-                "properties": {
-                    "logs": {
-                        "items": {
-                            "$ref": "#/components/schemas/JobLogResponse"
-                        },
-                        "type": "array",
-                        "title": "Logs"
-                    },
-                    "total": {
-                        "type": "integer",
-                        "title": "Total"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "logs",
-                    "total"
-                ],
-                "title": "JobLogListResponse"
-            },
-            "JobLogResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "job_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Job Id"
-                    },
-                    "message": {
-                        "type": "string",
-                        "title": "Message"
-                    },
-                    "level": {
-                        "$ref": "#/components/schemas/LogLevel"
-                    },
-                    "created_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Created At"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "job_id",
-                    "message",
-                    "level",
-                    "created_at"
-                ],
-                "title": "JobLogResponse"
-            },
-            "JobPriority": {
-                "type": "string",
-                "enum": [
-                    "high",
-                    "normal",
-                    "low"
-                ],
-                "title": "JobPriority"
-            },
-            "JobResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "job_type": {
-                        "$ref": "#/components/schemas/JobType"
-                    },
-                    "status": {
-                        "$ref": "#/components/schemas/JobStatus"
-                    },
-                    "priority": {
-                        "$ref": "#/components/schemas/JobPriority"
-                    },
-                    "input_payload": {
-                        "additionalProperties": true,
-                        "type": "object",
-                        "title": "Input Payload"
-                    },
-                    "result_payload": {
-                        "anyOf": [
-                            {
-                                "additionalProperties": true,
-                                "type": "object"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Result Payload"
-                    },
-                    "error_message": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Error Message"
-                    },
-                    "created_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Created At"
-                    },
-                    "updated_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Updated At"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "job_type",
-                    "status",
-                    "priority",
-                    "input_payload",
-                    "result_payload",
-                    "error_message",
-                    "created_at",
-                    "updated_at"
-                ],
-                "title": "JobResponse"
-            },
-            "JobStatus": {
-                "type": "string",
-                "enum": [
-                    "pending",
-                    "processing",
-                    "completed",
-                    "failed"
-                ],
-                "title": "JobStatus"
-            },
-            "JobType": {
-                "type": "string",
-                "enum": [
-                    "summarization",
-                    "ocr",
-                    "embeddings",
-                    "transcription",
-                    "recommendations",
-                    "ingestion",
-                    "rag_query"
-                ],
-                "title": "JobType"
-            },
-            "JobTypeStats": {
-                "properties": {
-                    "job_type": {
-                        "type": "string",
-                        "title": "Job Type"
-                    },
-                    "total": {
-                        "type": "integer",
-                        "title": "Total"
-                    },
-                    "avg_duration_seconds": {
-                        "anyOf": [
-                            {
-                                "type": "number"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Avg Duration Seconds"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "job_type",
-                    "total",
-                    "avg_duration_seconds"
-                ],
-                "title": "JobTypeStats"
-            },
-            "LogLevel": {
-                "type": "string",
-                "enum": [
-                    "info",
-                    "warning",
-                    "error",
-                    "debug"
-                ],
-                "title": "LogLevel"
-            },
-            "RAGQueryRequest": {
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "maxLength": 2000,
-                        "minLength": 1,
-                        "title": "Question",
-                        "description": "The question to answer"
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "maximum": 50.0,
-                        "minimum": 1.0,
-                        "title": "Top K",
-                        "description": "Number of chunks to retrieve",
-                        "default": 5
-                    },
-                    "document_ids": {
-                        "anyOf": [
-                            {
-                                "items": {
-                                    "type": "string",
-                                    "format": "uuid"
-                                },
-                                "type": "array"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Document Ids",
-                        "description": "Limit retrieval to these documents only"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "question"
-                ],
-                "title": "RAGQueryRequest"
-            },
-            "RAGQueryResponse": {
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Job Id"
-                    },
-                    "message": {
-                        "type": "string",
-                        "title": "Message",
-                        "default": "RAG query submitted"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "job_id"
-                ],
-                "title": "RAGQueryResponse",
-                "description": "Returned immediately \u2014 contains the job ID for status polling."
-            },
-            "RAGQuerySyncResponse": {
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "title": "Question"
-                    },
-                    "answer": {
-                        "type": "string",
-                        "title": "Answer"
-                    },
-                    "sources": {
-                        "items": {
-                            "$ref": "#/components/schemas/RAGSourceResponse"
-                        },
-                        "type": "array",
-                        "title": "Sources"
-                    },
-                    "chunks_retrieved": {
-                        "type": "integer",
-                        "title": "Chunks Retrieved"
-                    },
-                    "top_k_requested": {
-                        "anyOf": [
-                            {
-                                "type": "integer"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Top K Requested"
-                    },
-                    "model": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Model"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "question",
-                    "answer",
-                    "sources",
-                    "chunks_retrieved"
-                ],
-                "title": "RAGQuerySyncResponse"
-            },
-            "RAGSourceResponse": {
-                "properties": {
-                    "chunk_id": {
-                        "type": "string",
-                        "title": "Chunk Id"
-                    },
-                    "document_id": {
-                        "type": "string",
-                        "title": "Document Id"
-                    },
-                    "document_title": {
-                        "type": "string",
-                        "title": "Document Title"
-                    },
-                    "chunk_index": {
-                        "type": "integer",
-                        "title": "Chunk Index"
-                    },
-                    "similarity": {
-                        "type": "number",
-                        "title": "Similarity"
-                    },
-                    "text_preview": {
-                        "type": "string",
-                        "title": "Text Preview"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "chunk_id",
-                    "document_id",
-                    "document_title",
-                    "chunk_index",
-                    "similarity",
-                    "text_preview"
-                ],
-                "title": "RAGSourceResponse"
-            },
-            "TopKJobResponse": {
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Job Id"
-                    },
-                    "job_type": {
-                        "type": "string",
-                        "title": "Job Type"
-                    },
-                    "duration_seconds": {
-                        "type": "number",
-                        "title": "Duration Seconds"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "job_id",
-                    "job_type",
-                    "duration_seconds"
-                ],
-                "title": "TopKJobResponse"
-            },
-            "ValidationError": {
-                "properties": {
-                    "loc": {
-                        "items": {
-                            "anyOf": [
-                                {
-                                    "type": "string"
-                                },
-                                {
-                                    "type": "integer"
-                                }
-                            ]
-                        },
-                        "type": "array",
-                        "title": "Location"
-                    },
-                    "msg": {
-                        "type": "string",
-                        "title": "Message"
-                    },
-                    "type": {
-                        "type": "string",
-                        "title": "Error Type"
-                    },
-                    "input": {
-                        "title": "Input"
-                    },
-                    "ctx": {
-                        "type": "object",
-                        "title": "Context"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "loc",
-                    "msg",
-                    "type"
-                ],
-                "title": "ValidationError"
-            },
-            "WorkerHealthResponse": {
-                "properties": {
-                    "workers": {
-                        "items": {
-                            "$ref": "#/components/schemas/WorkerHeartbeatResponse"
-                        },
-                        "type": "array",
-                        "title": "Workers"
-                    },
-                    "total_online": {
-                        "type": "integer",
-                        "title": "Total Online"
-                    },
-                    "total_busy": {
-                        "type": "integer",
-                        "title": "Total Busy"
-                    },
-                    "total_offline": {
-                        "type": "integer",
-                        "title": "Total Offline"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "workers",
-                    "total_online",
-                    "total_busy",
-                    "total_offline"
-                ],
-                "title": "WorkerHealthResponse"
-            },
-            "WorkerHeartbeatResponse": {
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "title": "Id"
-                    },
-                    "worker_name": {
-                        "type": "string",
-                        "title": "Worker Name"
-                    },
-                    "worker_type": {
-                        "type": "string",
-                        "title": "Worker Type"
-                    },
-                    "status": {
-                        "$ref": "#/components/schemas/WorkerStatus"
-                    },
-                    "last_seen_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "title": "Last Seen At"
-                    },
-                    "current_job_id": {
-                        "anyOf": [
-                            {
-                                "type": "string",
-                                "format": "uuid"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Current Job Id"
-                    },
-                    "jobs_completed": {
-                        "type": "integer",
-                        "title": "Jobs Completed"
-                    },
-                    "jobs_failed": {
-                        "type": "integer",
-                        "title": "Jobs Failed"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "id",
-                    "worker_name",
-                    "worker_type",
-                    "status",
-                    "last_seen_at",
-                    "current_job_id",
-                    "jobs_completed",
-                    "jobs_failed"
-                ],
-                "title": "WorkerHeartbeatResponse"
-            },
-            "WorkerStatus": {
-                "type": "string",
-                "enum": [
-                    "online",
-                    "busy",
-                    "offline"
-                ],
-                "title": "WorkerStatus"
+            "description": "Max records to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobListResponse"
+                }
+              }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
         }
+      }
     },
-    "servers": [
-        {
-            "url": "http://localhost:8000",
-            "description": "Docker Compose / local uvicorn"
-        },
-        {
-            "url": "http://localhost:30080",
-            "description": "Kubernetes NodePort (Stage 12)"
+    "/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Job",
+        "description": "Return job status for polling.",
+        "operationId": "get_job_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
         }
-    ]
+      }
+    },
+    "/jobs/{job_id}/file": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Job File",
+        "description": "Return metadata for the file attached to this job, if any.",
+        "operationId": "get_job_file_jobs__job_id__file_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobFileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uploads": {
+      "post": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Upload File",
+        "description": "Upload a file for later use in a job.",
+        "operationId": "upload_file_uploads_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_file_uploads_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uploads/job": {
+      "post": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Create Job With Upload",
+        "description": "Upload a file and create an OCR or transcription job.",
+        "operationId": "create_job_with_upload_uploads_job_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_job_with_upload_uploads_job_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uploads/{file_id}": {
+      "get": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Get Upload Metadata",
+        "operationId": "get_upload_metadata_uploads__file_id__get",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobFileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/dashboard": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Dashboard",
+        "operationId": "dashboard_admin_dashboard_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/jobs/{job_id}/logs": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Get Job Logs",
+        "operationId": "get_job_logs_admin_jobs__job_id__logs_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of records to skip",
+              "default": 0,
+              "title": "Skip"
+            },
+            "description": "Number of records to skip"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "description": "Max records to return",
+              "default": 100,
+              "title": "Limit"
+            },
+            "description": "Max records to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobLogListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/errors": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Recent Errors",
+        "operationId": "recent_errors_admin_errors_get",
+        "parameters": [
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of records to skip",
+              "default": 0,
+              "title": "Skip"
+            },
+            "description": "Number of records to skip"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "description": "Max records to return",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Max records to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobLogResponse"
+                  },
+                  "title": "Response Recent Errors Admin Errors Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/slowest-jobs": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Slowest Jobs",
+        "operationId": "slowest_jobs_admin_slowest_jobs_get",
+        "parameters": [
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of records to skip",
+              "default": 0,
+              "title": "Skip"
+            },
+            "description": "Number of records to skip"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Max records to return",
+              "default": 10,
+              "title": "Limit"
+            },
+            "description": "Max records to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TopKJobResponse"
+                  },
+                  "title": "Response Slowest Jobs Admin Slowest Jobs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/workers": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Worker Health",
+        "operationId": "worker_health_admin_workers_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerHealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/documents/ingest": {
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Ingest Document",
+        "operationId": "ingest_document_documents_ingest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentIngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentIngestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/documents/{document_id}": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Get Document",
+        "operationId": "get_document_documents__document_id__get",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/documents/{document_id}/chunks": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Get Document Chunks",
+        "operationId": "get_document_chunks_documents__document_id__chunks_get",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Skip"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rag/query": {
+      "post": {
+        "tags": [
+          "rag"
+        ],
+        "summary": "Rag Query Async",
+        "operationId": "rag_query_async_rag_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RAGQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RAGQueryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rag/query/sync": {
+      "post": {
+        "tags": [
+          "rag"
+        ],
+        "summary": "Rag Query Sync",
+        "description": "Run a RAG query synchronously and return the answer in one response.",
+        "operationId": "rag_query_sync_rag_query_sync_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RAGQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RAGQuerySyncResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Return per-queue Redis depths and total queued count.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Ready",
+        "description": "Kubernetes readiness/liveness probe target.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_create_job_with_upload_uploads_job_post": {
+        "properties": {
+          "job_type": {
+            "$ref": "#/components/schemas/JobType"
+          },
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/JobPriority",
+            "default": "normal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_type",
+          "file"
+        ],
+        "title": "Body_create_job_with_upload_uploads_job_post"
+      },
+      "Body_upload_file_uploads_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/FilePurpose"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "purpose"
+        ],
+        "title": "Body_upload_file_uploads_post"
+      },
+      "ChunkListResponse": {
+        "properties": {
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/ChunkResponse"
+            },
+            "type": "array",
+            "title": "Chunks"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunks",
+          "total",
+          "document_id"
+        ],
+        "title": "ChunkListResponse"
+      },
+      "ChunkResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "chunk_index": {
+            "type": "integer",
+            "title": "Chunk Index"
+          },
+          "token_count": {
+            "type": "integer",
+            "title": "Token Count"
+          },
+          "level": {
+            "type": "string",
+            "title": "Level",
+            "default": "child"
+          },
+          "parent_chunk_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Chunk Id"
+          },
+          "metadata_": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "document_id",
+          "content",
+          "chunk_index",
+          "token_count",
+          "created_at"
+        ],
+        "title": "ChunkResponse"
+      },
+      "DashboardResponse": {
+        "properties": {
+          "total_jobs": {
+            "type": "integer",
+            "title": "Total Jobs"
+          },
+          "pending_jobs": {
+            "type": "integer",
+            "title": "Pending Jobs"
+          },
+          "processing_jobs": {
+            "type": "integer",
+            "title": "Processing Jobs"
+          },
+          "completed_jobs": {
+            "type": "integer",
+            "title": "Completed Jobs"
+          },
+          "failed_jobs": {
+            "type": "integer",
+            "title": "Failed Jobs"
+          },
+          "avg_processing_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Processing Seconds"
+          },
+          "slowest_job_types": {
+            "items": {
+              "$ref": "#/components/schemas/JobTypeStats"
+            },
+            "type": "array",
+            "title": "Slowest Job Types"
+          },
+          "queue_size": {
+            "type": "integer",
+            "title": "Queue Size"
+          },
+          "workers": {
+            "$ref": "#/components/schemas/WorkerHealthResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_jobs",
+          "pending_jobs",
+          "processing_jobs",
+          "completed_jobs",
+          "failed_jobs",
+          "avg_processing_seconds",
+          "slowest_job_types",
+          "queue_size",
+          "workers"
+        ],
+        "title": "DashboardResponse"
+      },
+      "DocumentIngestRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "description": "Human-readable name for this document"
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Content",
+            "description": "The full text content to ingest"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Where this document came from: 'text', 'upload', 'url'",
+            "default": "text"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Optional metadata (author, department, tags, etc.)"
+          },
+          "chunk_size": {
+            "type": "integer",
+            "maximum": 2000.0,
+            "minimum": 50.0,
+            "title": "Chunk Size",
+            "default": 512
+          },
+          "chunk_overlap": {
+            "type": "integer",
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Chunk Overlap",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "content"
+        ],
+        "title": "DocumentIngestRequest",
+        "description": "Request body for document ingestion."
+      },
+      "DocumentIngestResponse": {
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/DocumentResponse"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Job Id"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Document submitted for ingestion"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document",
+          "job_id"
+        ],
+        "title": "DocumentIngestResponse",
+        "description": "Document record plus job ID for ingestion status polling."
+      },
+      "DocumentResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "metadata_": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
+          "chunk_size": {
+            "type": "integer",
+            "title": "Chunk Size"
+          },
+          "chunk_overlap": {
+            "type": "integer",
+            "title": "Chunk Overlap"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "source",
+          "status",
+          "chunk_size",
+          "chunk_overlap",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DocumentResponse"
+      },
+      "FilePurpose": {
+        "type": "string",
+        "enum": [
+          "ocr",
+          "transcription"
+        ],
+        "title": "FilePurpose",
+        "description": "What the uploaded file will be used for."
+      },
+      "FileUploadResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "original_filename": {
+            "type": "string",
+            "title": "Original Filename"
+          },
+          "file_type": {
+            "type": "string",
+            "title": "File Type"
+          },
+          "file_size": {
+            "type": "integer",
+            "title": "File Size"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/FilePurpose"
+          },
+          "deduplicated": {
+            "type": "boolean",
+            "title": "Deduplicated",
+            "description": "True if this upload matched an existing file by hash"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "original_filename",
+          "file_type",
+          "file_size",
+          "content_hash",
+          "purpose",
+          "deduplicated",
+          "created_at"
+        ],
+        "title": "FileUploadResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "JobCreate": {
+        "properties": {
+          "job_type": {
+            "$ref": "#/components/schemas/JobType"
+          },
+          "input": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input",
+            "description": "Job-specific input payload"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/JobPriority",
+            "default": "normal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_type",
+          "input"
+        ],
+        "title": "JobCreate"
+      },
+      "JobFileResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "original_filename": {
+            "type": "string",
+            "title": "Original Filename"
+          },
+          "file_type": {
+            "type": "string",
+            "title": "File Type"
+          },
+          "file_size": {
+            "type": "integer",
+            "title": "File Size"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/FilePurpose"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_id",
+          "original_filename",
+          "file_type",
+          "file_size",
+          "content_hash",
+          "purpose",
+          "created_at"
+        ],
+        "title": "JobFileResponse"
+      },
+      "JobListResponse": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/JobResponse"
+            },
+            "type": "array",
+            "title": "Jobs"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "jobs",
+          "total"
+        ],
+        "title": "JobListResponse"
+      },
+      "JobLogListResponse": {
+        "properties": {
+          "logs": {
+            "items": {
+              "$ref": "#/components/schemas/JobLogResponse"
+            },
+            "type": "array",
+            "title": "Logs"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "logs",
+          "total"
+        ],
+        "title": "JobLogListResponse"
+      },
+      "JobLogResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Job Id"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "level": {
+            "$ref": "#/components/schemas/LogLevel"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_id",
+          "message",
+          "level",
+          "created_at"
+        ],
+        "title": "JobLogResponse"
+      },
+      "JobPriority": {
+        "type": "string",
+        "enum": [
+          "high",
+          "normal",
+          "low"
+        ],
+        "title": "JobPriority"
+      },
+      "JobResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "job_type": {
+            "$ref": "#/components/schemas/JobType"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/JobPriority"
+          },
+          "input_payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Payload"
+          },
+          "result_payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Payload"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_type",
+          "status",
+          "priority",
+          "input_payload",
+          "result_payload",
+          "error_message",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "JobResponse"
+      },
+      "JobStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "processing",
+          "completed",
+          "failed"
+        ],
+        "title": "JobStatus"
+      },
+      "JobType": {
+        "type": "string",
+        "enum": [
+          "summarization",
+          "ocr",
+          "embeddings",
+          "transcription",
+          "recommendations",
+          "ingestion",
+          "rag_query",
+          "query_expand",
+          "rerank",
+          "rag_retrieve",
+          "rag_generate"
+        ],
+        "title": "JobType"
+      },
+      "JobTypeStats": {
+        "properties": {
+          "job_type": {
+            "type": "string",
+            "title": "Job Type"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "avg_duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Duration Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_type",
+          "total",
+          "avg_duration_seconds"
+        ],
+        "title": "JobTypeStats"
+      },
+      "LogLevel": {
+        "type": "string",
+        "enum": [
+          "info",
+          "warning",
+          "error",
+          "debug"
+        ],
+        "title": "LogLevel"
+      },
+      "RAGQueryRequest": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Question"
+          },
+          "retrieve_k": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Retrieve K",
+            "default": 50
+          },
+          "keep_top_n": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Keep Top N",
+            "default": 3
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K",
+            "description": "Deprecated alias for retrieve_k"
+          },
+          "document_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Ids"
+          },
+          "metadata_filter": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata Filter",
+            "description": "e.g. {\"department\":\"legal\",\"page\":3}"
+          },
+          "use_multi_query": {
+            "type": "boolean",
+            "title": "Use Multi Query",
+            "default": true
+          },
+          "use_rerank": {
+            "type": "boolean",
+            "title": "Use Rerank",
+            "default": true
+          },
+          "use_small_to_big": {
+            "type": "boolean",
+            "title": "Use Small To Big",
+            "default": true
+          },
+          "use_chain": {
+            "type": "boolean",
+            "title": "Use Chain",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "RAGQueryRequest"
+      },
+      "RAGQueryResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Job Id"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "RAG query submitted"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "inline"
+          },
+          "step_job_ids": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Job Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "title": "RAGQueryResponse",
+        "description": "Immediate ack with job ID for status polling."
+      },
+      "RAGQuerySyncResponse": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/RAGSourceResponse"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "chunks_retrieved": {
+            "type": "integer",
+            "title": "Chunks Retrieved"
+          },
+          "top_k_requested": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K Requested"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question",
+          "answer",
+          "sources",
+          "chunks_retrieved"
+        ],
+        "title": "RAGQuerySyncResponse"
+      },
+      "RAGSourceResponse": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "document_title": {
+            "type": "string",
+            "title": "Document Title"
+          },
+          "chunk_index": {
+            "type": "integer",
+            "title": "Chunk Index"
+          },
+          "similarity": {
+            "type": "number",
+            "title": "Similarity"
+          },
+          "text_preview": {
+            "type": "string",
+            "title": "Text Preview"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "chunk_index",
+          "similarity",
+          "text_preview"
+        ],
+        "title": "RAGSourceResponse"
+      },
+      "TopKJobResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Job Id"
+          },
+          "job_type": {
+            "type": "string",
+            "title": "Job Type"
+          },
+          "duration_seconds": {
+            "type": "number",
+            "title": "Duration Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "job_type",
+          "duration_seconds"
+        ],
+        "title": "TopKJobResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WorkerHealthResponse": {
+        "properties": {
+          "workers": {
+            "items": {
+              "$ref": "#/components/schemas/WorkerHeartbeatResponse"
+            },
+            "type": "array",
+            "title": "Workers"
+          },
+          "total_online": {
+            "type": "integer",
+            "title": "Total Online"
+          },
+          "total_busy": {
+            "type": "integer",
+            "title": "Total Busy"
+          },
+          "total_offline": {
+            "type": "integer",
+            "title": "Total Offline"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workers",
+          "total_online",
+          "total_busy",
+          "total_offline"
+        ],
+        "title": "WorkerHealthResponse"
+      },
+      "WorkerHeartbeatResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "worker_name": {
+            "type": "string",
+            "title": "Worker Name"
+          },
+          "worker_type": {
+            "type": "string",
+            "title": "Worker Type"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkerStatus"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Seen At"
+          },
+          "current_job_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Job Id"
+          },
+          "jobs_completed": {
+            "type": "integer",
+            "title": "Jobs Completed"
+          },
+          "jobs_failed": {
+            "type": "integer",
+            "title": "Jobs Failed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "worker_name",
+          "worker_type",
+          "status",
+          "last_seen_at",
+          "current_job_id",
+          "jobs_completed",
+          "jobs_failed"
+        ],
+        "title": "WorkerHeartbeatResponse"
+      },
+      "WorkerStatus": {
+        "type": "string",
+        "enum": [
+          "online",
+          "busy",
+          "offline"
+        ],
+        "title": "WorkerStatus"
+      }
+    }
+  }
 }

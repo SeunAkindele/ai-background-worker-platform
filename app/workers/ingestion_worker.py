@@ -1,28 +1,4 @@
-"""
-Stage 13b — Ingestion Worker.
-
-Pipeline: Document text → Chunk → Embed → Store in vector DB.
-
-DSA Focus:
-----------
-- Sliding window chunking: O(n) where n = character count of document.
-  Same concept as your SummarizationHandler, but optimized for retrieval
-  (smaller chunks, more overlap for context continuity).
-- Batch embedding: process multiple chunks in one model.encode() call.
-  GPU/CPU vectorization makes batch encoding ~10x faster than one-by-one.
-  model.encode(["chunk1", "chunk2", ...]) uses internal batching with
-  matrix multiplication — O(batch_size * seq_len * d_model) but with
-  SIMD/BLAS parallelism.
-
-Python Internals Focus:
------------------------
-- Generator for chunking: yields one chunk at a time, never holding the
-  entire chunk list in memory. For a 10MB document producing 10,000 chunks,
-  this avoids allocating a 10,000-element list upfront.
-- The batch_size parameter controls the trade-off between memory and speed.
-  Too large → OOM on CPU. Too small → underutilizes vectorization.
-  32 is a safe default for all-MiniLM-L6-v2 on CPU.
-"""
+"""Document ingestion: chunk text, embed children, store vectors for RAG."""
 from typing import Any, Generator
 from uuid import UUID
 
@@ -38,26 +14,27 @@ from app.workers.base import BaseJobHandler
 
 
 class IngestionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
-    """
-    Ingests a document: chunk its text, embed each chunk, store vectors.
-    
-    Reuses the same sentence-transformers model as EmbeddingHandler
-    (all-MiniLM-L6-v2) but loads its own instance. In production,
-    you'd share a model server (like Triton) to avoid duplicate memory.
-    For Stage 13, each worker process has its own copy — simple and isolated.
-    """
+    """Chunk a document, embed searchable children, and persist embeddings."""
 
     def __init__(
         self,
         model_name: str = "all-MiniLM-L6-v2",
         default_chunk_size: int = 512,
         default_chunk_overlap: int = 50,
+        parent_size: int = 1024,
+        parent_overlap: int = 128,
+        child_size: int = 128,
+        child_overlap: int = 32,
         batch_size: int = 32,
     ):
         self._model_name = model_name
         self._model = None
         self._default_chunk_size = default_chunk_size
         self._default_chunk_overlap = default_chunk_overlap
+        self._parent_size = parent_size
+        self._parent_overlap = parent_overlap
+        self._child_size = child_size
+        self._child_overlap = child_overlap
         self._batch_size = batch_size
 
     def _get_model(self):
@@ -65,8 +42,6 @@ class IngestionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             from sentence_transformers import SentenceTransformer
             self._model = SentenceTransformer(self._model_name, device="cpu")
         return self._model
-
-    # ─── VALIDATION ──────────────────────────────────────────────────
 
     def validate_input(self, input_payload: dict[str, Any]) -> None:
         doc_id = input_payload.get("document_id")
@@ -77,47 +52,50 @@ class IngestionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
         except ValueError:
             raise ValueError("'document_id' must be a valid UUID")
 
-    # ─── MAIN PIPELINE ──────────────────────────────────────────────
-
     def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
-        """
-        The ingestion pipeline in 4 steps:
-        
-        1. Load document from DB
-        2. Chunk the text (sliding window)
-        3. Embed chunks in batches
-        4. Store chunks + embeddings in DB
-        
-        This runs inside a Celery worker (sync context), so we use
-        the sync db_session() — same as every other worker.
-        """
         document_id = UUID(str(input_payload["document_id"]))
+        use_s2b = input_payload.get("use_small_to_big", True)
+
+        parent_size = int(input_payload.get("parent_size", self._parent_size))
+        parent_overlap = int(input_payload.get("parent_overlap", self._parent_overlap))
+        child_size = int(input_payload.get("child_size", self._child_size))
+        child_overlap = int(input_payload.get("child_overlap", self._child_overlap))
+        # Flat fallback uses document/API chunk_size
         chunk_size = input_payload.get("chunk_size", self._default_chunk_size)
         chunk_overlap = input_payload.get("chunk_overlap", self._default_chunk_overlap)
 
-        # Step 1: Load the document
         with db_session() as db:
             document = db.query(Document).filter(Document.id == document_id).first()
             if document is None:
                 raise ValueError(f"Document {document_id} not found")
-
-            # Mark as INGESTING so the API can show progress
             document.status = DocumentStatus.INGESTING
             db.commit()
-
-            # Read the text while the session is open.
-            # After db_session() closes, lazy attributes would fail.
             text = document.content
             title = document.title
+            base_metadata = dict(document.metadata_ or {})
 
-        # Step 2: Chunk the text
-        # Collect chunks into a list because we need random access for
-        # batch embedding. The generator gives us lazy evaluation during
-        # iteration, but we materialize here because step 3 needs indices.
-        chunks_data = list(self._chunk_text(text, chunk_size, chunk_overlap))
+        if use_s2b:
+            rows = self._chunk_small_to_big(
+                text,
+                parent_size=parent_size,
+                parent_overlap=parent_overlap,
+                child_size=child_size,
+                child_overlap=child_overlap,
+                base_metadata=base_metadata,
+            )
+        else:
+            # Flat chunking: every chunk is a child with no parent
+            rows = []
+            for c in self._chunk_text(text, chunk_size, chunk_overlap):
+                rows.append({
+                    **c,
+                    "temp_key": f"c{c['index']}",
+                    "level": "child",
+                    "parent_temp_key": None,
+                    "metadata": {**(c.get("metadata") or {}), **base_metadata, "level": "child"},
+                })
 
-        if not chunks_data:
-            # Edge case: empty document or document shorter than overlap
+        if not rows:
             with db_session() as db:
                 document = db.query(Document).filter(Document.id == document_id).first()
                 document.status = DocumentStatus.READY
@@ -125,94 +103,168 @@ class IngestionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                 "document_id": str(document_id),
                 "title": title,
                 "chunks_created": 0,
+                "parents_created": 0,
                 "status": "ready",
             }
 
-        # Step 3: Embed in batches
-        # Extract just the text strings for the model
-        chunk_texts = [c["text"] for c in chunks_data]
-        all_embeddings = self._embed_in_batches(chunk_texts)
+        child_rows = [r for r in rows if r["level"] == "child"]
+        child_texts = [r["text"] for r in child_rows]
+        all_embeddings = self._embed_in_batches(child_texts) if child_texts else []
 
-        # Step 4: Store everything in DB
+        parents_created = 0
+        children_created = 0
+
         with db_session() as db:
             document = db.query(Document).filter(Document.id == document_id).first()
 
-            for i, chunk_data in enumerate(chunks_data):
+            temp_to_id: dict[str, UUID] = {}
+            for row in rows:
+                if row["level"] != "parent":
+                    continue
                 chunk = Chunk(
                     document_id=document_id,
-                    content=chunk_data["text"],
-                    chunk_index=chunk_data["index"],
-                    token_count=chunk_data["token_count"],
-                    metadata_=chunk_data.get("metadata"),
+                    content=row["text"],
+                    chunk_index=row["index"],
+                    token_count=row["token_count"],
+                    level="parent",
+                    parent_chunk_id=None,
+                    metadata_=row["metadata"],
                 )
                 db.add(chunk)
-                # flush() sends the INSERT to Postgres and populates chunk.id,
-                # but does NOT commit the transaction. This lets us use chunk.id
-                # for the embedding row while keeping everything in one atomic
-                # transaction. If any step fails, the entire batch rolls back.
+                db.flush()
+                temp_to_id[row["temp_key"]] = chunk.id
+                parents_created += 1
+
+            emb_i = 0
+            for row in rows:
+                if row["level"] != "child":
+                    continue
+                parent_id = None
+                if row.get("parent_temp_key"):
+                    parent_id = temp_to_id[row["parent_temp_key"]]
+
+                chunk = Chunk(
+                    document_id=document_id,
+                    content=row["text"],
+                    chunk_index=row["index"],
+                    token_count=row["token_count"],
+                    level="child",
+                    parent_chunk_id=parent_id,
+                    metadata_=row["metadata"],
+                )
+                db.add(chunk)
                 db.flush()
 
-                chunk_embedding = ChunkEmbedding(
+                db.add(ChunkEmbedding(
                     chunk_id=chunk.id,
-                    embedding=all_embeddings[i],
+                    embedding=all_embeddings[emb_i],
                     model_name=self._model_name,
-                )
-                db.add(chunk_embedding)
+                ))
+                emb_i += 1
+                children_created += 1
 
             document.status = DocumentStatus.READY
-            # db_session() context manager calls db.commit() on exit
 
         return {
             "document_id": str(document_id),
             "title": title,
-            "chunks_created": len(chunks_data),
+            "chunks_created": children_created,
+            "parents_created": parents_created,
             "embedding_dimensions": EMBEDDING_DIMENSIONS,
             "model": self._model_name,
+            "use_small_to_big": use_s2b,
             "status": "ready",
         }
+
 
     def format_result(self, raw_result: dict[str, Any]) -> dict[str, Any]:
         return raw_result
 
-    # ─── CHUNKING (DSA: Sliding Window) ─────────────────────────────
+
+    def _chunk_small_to_big(
+        self,
+        text: str,
+        *,
+        parent_size: int = 1024,
+        parent_overlap: int = 128,
+        child_size: int = 128,
+        child_overlap: int = 32,
+        base_metadata: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Build parent/child chunk rows via nested sliding windows."""
+        words = text.split()
+        if not words:
+            return []
+
+        base_metadata = base_metadata or {}
+        parent_step = max(1, parent_size - parent_overlap)
+        child_step = max(1, child_size - child_overlap)
+
+        rows: list[dict[str, Any]] = []
+        parent_local_index = 0
+        start = 0
+
+        while start < len(words):
+            pend = min(start + parent_size, len(words))
+            parent_words = words[start:pend]
+            parent_text = " ".join(parent_words)
+            temp_parent_key = f"p{parent_local_index}"
+
+            rows.append({
+                "temp_key": temp_parent_key,
+                "level": "parent",
+                "text": parent_text,
+                "index": parent_local_index,
+                "token_count": int(len(parent_words) * 1.3),
+                "metadata": {
+                    **base_metadata,
+                    "level": "parent",
+                    "start_word": start,
+                    "end_word": pend,
+                },
+                "parent_temp_key": None,
+            })
+
+            cstart = 0
+            child_local = 0
+            while cstart < len(parent_words):
+                cend = min(cstart + child_size, len(parent_words))
+                child_words = parent_words[cstart:cend]
+                rows.append({
+                    "temp_key": f"{temp_parent_key}_c{child_local}",
+                    "level": "child",
+                    "text": " ".join(child_words),
+                    "index": child_local,
+                    "token_count": int(len(child_words) * 1.3),
+                    "metadata": {
+                        **base_metadata,
+                        "level": "child",
+                        "start_word": start + cstart,
+                        "end_word": start + cend,
+                    },
+                    "parent_temp_key": temp_parent_key,
+                })
+                child_local += 1
+                if cend >= len(parent_words):
+                    break
+                cstart += child_step
+
+            parent_local_index += 1
+            if pend >= len(words):
+                break
+            start += parent_step
+
+        return rows
+        
 
     def _chunk_text(
         self, text: str, chunk_size: int, overlap: int
     ) -> Generator[dict[str, Any], None, None]:
-        """
-        DSA: Sliding window over words — O(n) single pass.
-        
-        This is the SAME algorithm as SummarizationHandler._chunk_text()
-        but returns richer metadata per chunk (index, token count).
-        
-        Why word-based instead of character-based?
-        - Word boundaries are natural semantic breaks
-        - Token counts approximate better with words than characters
-        - For production, you'd use tiktoken (token-level chunking) to
-          precisely control how many tokens each chunk uses in the LLM prompt
-        
-        Why overlap?
-        - A sentence split between two chunks loses context at the boundary.
-        - Overlap (typically 10-20% of chunk_size) ensures boundary sentences
-          appear in BOTH adjacent chunks, so retrieval can find them.
-        - Trade-off: more overlap = more chunks = more storage + slower search.
-        
-        Visual:
-        Document: [w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12]
-        chunk_size=5, overlap=2:
-          Chunk 0: [w1  w2  w3  w4  w5]        ← start=0
-          Chunk 1: [w4  w5  w6  w7  w8]        ← start=3 (step = 5-2 = 3)
-          Chunk 2: [w7  w8  w9  w10 w11]       ← start=6
-          Chunk 3: [w10 w11 w12]               ← start=9, partial final chunk
-                        ^^
-                    overlap zone — these words appear in two chunks
-        """
+        """Yield overlapping word-window chunks with index and token estimates."""
         words = text.split()
         if not words:
             return
 
-        # step = how far to advance the window start each iteration.
-        # step = chunk_size - overlap ensures the overlap zone.
         step = max(1, chunk_size - overlap)
         chunk_index = 0
         start = 0
@@ -225,8 +277,6 @@ class IngestionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
             yield {
                 "text": chunk_text,
                 "index": chunk_index,
-                # Rough token estimate: ~1.3 tokens per English word.
-                # In production, use tiktoken.encode() for exact counts.
                 "token_count": int(word_count * 1.3),
                 "metadata": {
                     "start_word": start,
@@ -239,32 +289,13 @@ class IngestionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
                 break
             start += step
 
-    # ─── BATCH EMBEDDING ────────────────────────────────────────────
-
     def _embed_in_batches(self, texts: list[str]) -> list[list[float]]:
-        """
-        Embed texts in fixed-size batches to control memory usage.
-        
-        Why batch instead of all-at-once?
-        - model.encode(texts) loads ALL texts into a tensor at once.
-          For 10,000 chunks, that's a ~10,000 × 128 token × 384 dim tensor
-          → potential OOM on machines with limited RAM.
-        - Batching: process 32 texts at a time, collect results.
-          Peak memory = batch_size × max_seq_len × hidden_dim.
-        
-        DSA Focus:
-        - This is the classic "process in blocks" pattern — same idea as
-          reading a file in 8KB buffers instead of loading it all into memory.
-        - Time complexity: O(n * d) where n=total texts, d=model dimensions.
-          Batching doesn't change Big-O, it changes the constant (memory).
-        """
+        """Embed texts in fixed-size batches to bound peak memory."""
         model = self._get_model()
         all_embeddings = []
 
         for i in range(0, len(texts), self._batch_size):
             batch = texts[i : i + self._batch_size]
-            # model.encode() returns a numpy ndarray of shape (batch_size, 384).
-            # .tolist() converts to a Python list[list[float]] for JSON/DB storage.
             batch_embeddings = model.encode(batch).tolist()
             all_embeddings.extend(batch_embeddings)
 

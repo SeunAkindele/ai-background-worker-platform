@@ -1,11 +1,4 @@
-"""
-Stage 13d — Document service: business logic for RAG operations.
-
-This follows the same pattern as your existing JobService:
-- Async methods for API routes (FastAPI is async)
-- Sync methods reused by workers (Celery is sync)
-- Service singleton at module level
-"""
+"""Document and RAG query business logic for API routes."""
 import asyncio
 from uuid import UUID
 
@@ -34,16 +27,7 @@ class DocumentService:
     async def ingest_document(
         self, db: AsyncSession, payload: DocumentIngestRequest
     ) -> DocumentIngestResponse:
-        """
-        Two-phase operation:
-        1. Create the Document row (PENDING status)
-        2. Create an INGESTION job that references the document
-        
-        The document is NOT queryable until the ingestion worker
-        finishes and sets status = READY. This prevents partial
-        results from appearing in RAG queries.
-        """
-        # Phase 1: Create the document record
+        """Create a document row and dispatch an ingestion job."""
         document = Document(
             title=payload.title,
             content=payload.content,
@@ -88,35 +72,45 @@ class DocumentService:
             document=DocumentResponse.model_validate(document),
             job_id=job.id,
         )
-    
-    # ─── ASYNC RAG (job queue) ───────────────────────────────────────
 
+    
+    def _build_rag_input(payload: RAGQueryRequest) -> dict:
+        """
+        Shared payload for inline + chain.
+
+        Never send top_k=null into the handler — resolve a concrete
+        retrieve_k here and omit top_k entirely.
+        """
+        retrieve_k = payload.retrieve_k
+        if payload.top_k is not None:
+            retrieve_k = payload.top_k
+        data = {
+            "question": payload.question,
+            "retrieve_k": retrieve_k,
+            "keep_top_n": payload.keep_top_n,
+            "use_multi_query": payload.use_multi_query,
+            "use_rerank": payload.use_rerank,
+            "use_small_to_big": payload.use_small_to_big,
+        }
+        if payload.document_ids:
+            data["document_ids"] = [str(d) for d in payload.document_ids]
+        if payload.metadata_filter:
+            data["metadata_filter"] = payload.metadata_filter
+        return data
+    
     async def submit_rag_query(
         self, db: AsyncSession, payload: RAGQueryRequest
     ) -> RAGQueryResponse:
-        """
-        Submit a RAG query as an async job.
-        
-        Why async (job queue) instead of synchronous (request-response)?
-        - Embedding the question: ~100ms
-        - Vector search: ~5-50ms
-        - LLM generation: ~2-10 seconds
-        Total: 2-10+ seconds. Too slow for a synchronous HTTP request
-        that would block a FastAPI worker. The job queue lets the user
-        poll for results while the API stays responsive.
-        """
-        input_payload = {
-            "question": payload.question,
-            "top_k": payload.top_k,
-        }
-        if payload.document_ids:
-            input_payload["document_ids"] = [
-                str(did) for did in payload.document_ids
-            ]
+        """Submit a RAG query as an async job (inline or chain)."""
+        input_payload = self._build_rag_input(payload)
+
+        if payload.use_chain:
+            return await self.submit_rag_query_chain(db, input_payload)
+
 
         job = Job(
             job_type=JobType.RAG_QUERY,
-            input_payload=input_payload,
+            input_payload={**input_payload, "mode": "inline"},
             status=JobStatus.PENDING,
             priority=JobPriority.NORMAL,
         )
@@ -125,7 +119,6 @@ class DocumentService:
         await db.refresh(job)
 
         from app.workers.celery_app import celery_app
-
         celery_app.send_task(
             "process_job",
             args=[str(job.id)],
@@ -133,7 +126,97 @@ class DocumentService:
             priority=PRIORITY_TO_CELERY[JobPriority.NORMAL],
         )
 
-        return RAGQueryResponse(job_id=job.id)
+        return RAGQueryResponse(
+            job_id=job.id,
+            message="RAG query submitted (inline)",
+            mode="inline",
+        )
+
+
+    async def submit_rag_query_chain(
+        self, db: AsyncSession, input_payload: dict
+    ) -> RAGQueryResponse:
+        """
+        Create parent + 4 step jobs, then start Celery chain.
+        Parent is completed by the FINAL chain task (not process_job).
+        """
+        parent = Job(
+            job_type=JobType.RAG_QUERY,
+            input_payload={**input_payload, "mode": "chain"},
+            status=JobStatus.PENDING,
+            priority=JobPriority.NORMAL,
+        )
+        db.add(parent)
+        await db.flush()  # need parent.id
+        expand = Job(
+            job_type=JobType.QUERY_EXPAND,
+            input_payload={
+                "question": input_payload["question"],
+                "num_queries": 3 if input_payload.get("use_multi_query", True) else 1,
+                "parent_job_id": str(parent.id),
+            },
+            status=JobStatus.PENDING,
+            priority=JobPriority.NORMAL,
+        )
+        retrieve = Job(
+            job_type=JobType.RAG_RETRIEVE,
+            input_payload={
+                **input_payload,
+                "parent_job_id": str(parent.id),
+            },
+            status=JobStatus.PENDING,
+            priority=JobPriority.NORMAL,
+        )
+        rerank = Job(
+            job_type=JobType.RERANK,
+            input_payload={
+                "question": input_payload["question"],
+                "keep_top_n": input_payload.get("keep_top_n", 3),
+                "parent_job_id": str(parent.id),
+                # candidates filled by previous chain step into this job at runtime
+            },
+            status=JobStatus.PENDING,
+            priority=JobPriority.NORMAL,
+        )
+        generate = Job(
+            job_type=JobType.RAG_GENERATE,
+            input_payload={
+                **input_payload,
+                "parent_job_id": str(parent.id),
+            },
+            status=JobStatus.PENDING,
+            priority=JobPriority.NORMAL,
+        )
+        db.add_all([expand, retrieve, rerank, generate])
+        await db.commit()
+        for j in (parent, expand, retrieve, rerank, generate):
+            await db.refresh(j)
+        step_ids = {
+            "expand": expand.id,
+            "retrieve": retrieve.id,
+            "rerank": rerank.id,
+            "generate": generate.id,
+        }
+        # Persist step ids on parent for debugging
+        parent.input_payload = {
+            **parent.input_payload,
+            "step_job_ids": {k: str(v) for k, v in step_ids.items()},
+        }
+        await db.commit()
+        from app.workers.rag_chain_tasks import dispatch_rag_chain
+        dispatch_rag_chain(
+            parent_job_id=str(parent.id),
+            expand_job_id=str(expand.id),
+            retrieve_job_id=str(retrieve.id),
+            rerank_job_id=str(rerank.id),
+            generate_job_id=str(generate.id),
+        )
+        return RAGQueryResponse(
+            job_id=parent.id,
+            message="RAG query submitted (Celery chain)",
+            mode="chain",
+            step_job_ids=step_ids,
+        )
 
 
     async def run_rag_query_sync(
@@ -144,28 +227,14 @@ class DocumentService:
         Uses asyncio.to_thread() so CPU-heavy model work does not block
         the FastAPI event loop while other requests are handled.
         """
-        input_payload = {
-            "question": payload.question,
-            "top_k": payload.top_k,
-        }
-        if payload.document_ids:
-            input_payload["document_ids"] = [
-                str(did) for did in payload.document_ids
-            ]
+        if payload.use_chain:
+            raise HTTPException(
+                status_code=400,
+                detail="use_chain is only supported on POST /rag/query (async)",
+            )
+        input_payload = self._build_rag_input(payload)
         handler = get_handler(JobType.RAG_QUERY)
-        try:
-            # Run sync handler in a worker thread
-            result = await asyncio.to_thread(handler, input_payload)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
-            ) from exc
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"RAG query failed: {exc}",
-            ) from exc
+        result = await asyncio.to_thread(handler, input_payload)
         return RAGQuerySyncResponse.model_validate(result)
 
 
@@ -182,15 +251,7 @@ class DocumentService:
     async def get_document_chunks(
         self, db: AsyncSession, document_id: UUID, skip: int = 0, limit: int = 50
     ) -> ChunkListResponse:
-        """
-        Return all chunks for a document, ordered by chunk_index.
-        
-        This endpoint is useful for:
-        - Debugging: "what did the chunker produce?"
-        - UI: showing the user how their document was split
-        - Stage 14: inspecting which chunks were retrieved for a query
-        """
-        # First verify the document exists
+        """Return paginated chunks for a document, ordered by chunk_index."""
         doc_stmt = select(Document).where(Document.id == document_id)
         doc_result = await db.execute(doc_stmt)
         document = doc_result.scalars().first()
@@ -200,7 +261,6 @@ class DocumentService:
                 detail=f"Document {document_id} not found",
             )
 
-        # Count total chunks
         count_stmt = (
             select(func.count())
             .select_from(Chunk)
@@ -209,7 +269,6 @@ class DocumentService:
         count_result = await db.execute(count_stmt)
         total = count_result.scalar_one()
 
-        # Fetch paginated chunks, ordered by position in the document
         chunks_stmt = (
             select(Chunk)
             .where(Chunk.document_id == document_id)

@@ -24,9 +24,10 @@ class JobType(str, enum.Enum):
     RECOMMENDATIONS = "recommendations"
     INGESTION = "ingestion"
     RAG_QUERY = "rag_query"
-    # Stage 14
     QUERY_EXPAND = "query_expand"
     RERANK = "rerank"
+    RAG_RETRIEVE = "rag_retrieve"
+    RAG_GENERATE = "rag_generate"
 
 
 class JobPriority(str, enum.Enum):

@@ -1,6 +1,5 @@
-"""
-Transcription Worker — Stage 6 + Stage 9 file uploads.
-"""
+"""Transcription job handler for uploaded audio/video."""
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -196,8 +195,7 @@ class TranscriptionHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     ) -> list[TranscriptSegment]:
         if file_path and not source_text:
             source_text = (
-                f"Simulated transcription for uploaded file {Path(file_path).name}. "
-                "Real Whisper integration can replace this in a later stage."
+                f"Simulated transcription for uploaded file {Path(file_path).name}."
             )
 
         if not source_text:
