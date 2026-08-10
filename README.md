@@ -37,7 +37,7 @@ docker compose up --build
 ```
 
 - API: `http://localhost:8000` · Docs: `/docs` · Examples: [`API_COLLECTION.md`](API_COLLECTION.md)
-- Existing Postgres volumes may need: `init-db/02-stage14-jobtype-enum.sql`
+- Existing Postgres volumes may need: `init-db/02-stage14-jobtype-enum.sql` and `init-db/03-stage15-chunk-hierarchy.sql`
 
 ```bash
 curl -X POST http://localhost:8000/documents/ingest \

@@ -74,7 +74,7 @@ class DocumentService:
         )
 
     
-    def _build_rag_input(payload: RAGQueryRequest) -> dict:
+    def _build_rag_input(self, payload: RAGQueryRequest) -> dict:
         """
         Shared payload for inline + chain.
 
