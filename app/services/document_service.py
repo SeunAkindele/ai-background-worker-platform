@@ -91,7 +91,13 @@ class DocumentService:
             "use_multi_query": payload.use_multi_query,
             "use_rerank": payload.use_rerank,
             "use_small_to_big": payload.use_small_to_big,
+            "use_router": payload.use_router,
+            "use_critic": payload.use_critic,
+            "max_critic_attempts": payload.max_critic_attempts,
+            "use_eval": payload.use_eval,
         }
+        if payload.force_route:
+            data["force_route"] = payload.force_route
         if payload.document_ids:
             data["document_ids"] = [str(d) for d in payload.document_ids]
         if payload.metadata_filter:
@@ -284,6 +290,41 @@ class DocumentService:
             total=total,
             document_id=document_id,
         )
+        
 
+    async def submit_modular_rag(
+        self, db: AsyncSession, payload: RAGQueryRequest
+    ) -> RAGQueryResponse:
+        """Submit a modular RAG job with router, critic, eval, and MCP enabled."""
+        input_payload = {
+            **self._build_rag_input(payload),
+            "mode": "modular",
+            "use_router": True,
+            "use_critic": getattr(payload, "use_critic", True),
+            "use_eval": getattr(payload, "use_eval", True),
+            "use_mcp": getattr(payload, "use_mcp", True),
+        }
+        job = Job(
+            job_type=JobType.RAG_QUERY,
+            input_payload=input_payload,
+            status=JobStatus.PENDING,
+            priority=JobPriority.NORMAL,
+        )
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+
+        from app.workers.celery_app import celery_app
+        celery_app.send_task(
+            "process_job",
+            args=[str(job.id)],
+            queue="rag_query",
+            priority=PRIORITY_TO_CELERY[JobPriority.NORMAL],
+        )
+        return RAGQueryResponse(
+            job_id=job.id,
+            message="Modular RAG query submitted",
+            mode="modular",
+        )
 
 document_service = DocumentService()

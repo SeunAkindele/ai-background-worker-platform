@@ -65,3 +65,28 @@ class TopKJobResponse(BaseModel):
     job_id: UUID
     job_type: str
     duration_seconds: float
+
+
+class RagDashboardResponse(BaseModel):
+    window_hours: int
+    total_queries: int
+    retrieve_hit_rate: float | None
+    rerank_lift_rate: float | None
+    failed_grounding_rate: float | None
+    avg_context_relevance: float | None
+    avg_answer_relevance: float | None
+    avg_groundedness: float | None
+    avg_latency_ms: float | None
+    route_counts: dict[str, int]
+    critic_pass_rate: float | None
+    slowest_queries: list["RagSlowQuery"]
+
+
+class RagSlowQuery(BaseModel):
+    id: UUID
+    job_id: UUID | None
+    question: str
+    route: str
+    total_latency_ms: float | None
+    groundedness: float | None
+    created_at: datetime

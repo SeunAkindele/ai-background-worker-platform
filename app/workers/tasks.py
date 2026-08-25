@@ -53,7 +53,8 @@ def process_job(self, job_id: str) -> None:
             status=WorkerStatus.BUSY, current_job_id=job_uuid,
         )
         handler = get_handler(job.job_type)
-        input_payload = job.input_payload
+        input_payload = dict(job.input_payload)
+        input_payload["job_id"] = str(job.id)
 
     # --- Phase 2: Process ---
     try:

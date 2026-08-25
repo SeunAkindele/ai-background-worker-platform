@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     max_upload_size_bytes: int = 52_428_800  # 50 MB
     upload_chunk_size: int = 8192  # 8 KB — classic buffer size
 
+    mcp_web_url: str
+
     # Asynchronous database URL property
     @property
     def async_database_url(self) -> str:

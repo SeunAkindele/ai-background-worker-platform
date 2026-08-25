@@ -28,6 +28,10 @@ class JobType(str, enum.Enum):
     RERANK = "rerank"
     RAG_RETRIEVE = "rag_retrieve"
     RAG_GENERATE = "rag_generate"
+    ROUTE_QUERY = "route_query"
+    CRITIC = "critic"
+    RAG_EVAL = "rag_eval"
+    MCP_TOOL_CALL = "mcp_tool_call"
 
 
 class JobPriority(str, enum.Enum):

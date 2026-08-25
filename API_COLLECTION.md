@@ -4,6 +4,8 @@ Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` 
 
 > **Advanced RAG (Compose):** Multi-query expand, metadata filters, cross-encoder rerank, small-to-big parent/child chunks, and optional Celery chain mode (`use_chain: true` on `POST /rag/query`). Chain step job types: `query_expand`, `rerank`, `rag_retrieve`, `rag_generate`. Chunk list responses include `level` / `parent_chunk_id`. Compose runs dedicated workers per primary job type (including `ingestion` and `rag_query`) against Postgres with **pgvector**.
 >
+> **Modular RAG — Stage 15 (Compose):** Enable on `POST /rag/query` or `POST /rag/query/sync` with flags: `use_router` (cache | vector | sql | web), `use_critic` + `max_critic_attempts` (self-correction loop), `use_eval` (persist RAG triad to `rag_query_metrics`). Web route calls external MCP via `MCP_WEB_URL`. Inspect quality with `GET /admin/rag/dashboard`. Apply `init-db/04-stage15-modular-rag.sql` on existing DB volumes.
+>
 > **Deployments:** With `docker compose up`, workers share the **same image**; jobs route to a Redis queue named after `job_type`, with `priority` ordering inside that queue (Celery integers 0 / 5 / 9). Kubernetes (`kubectl apply -k infra/kubernetes/`) exposes the API on NodePort `30080` with readiness via `GET /ready`; current manifests deploy a smaller worker set than Compose (update before relying on RAG on K8s).
 
 ---
@@ -31,6 +33,7 @@ Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` 
 | `GET` | `/admin/errors` | Recent error logs across all jobs |
 | `GET` | `/admin/slowest-jobs` | Top-K slowest completed jobs |
 | `GET` | `/admin/workers` | Worker health and status |
+| `GET` | `/admin/rag/dashboard` | Stage 15 RAG metrics (triad, routes, critic, slow queries) |
 
 ---
 
@@ -752,6 +755,11 @@ Content-Type: application/json
 | `use_rerank` | no | Cross-encoder rerank of the candidate pool (default `true`) |
 | `use_small_to_big` | no | Expand selected children to parent text (default `true`) |
 | `use_chain` | no | `false` (default) = one `rag_query` job; `true` = Celery chain (async only) |
+| `use_router` | no | Stage 15a: classify route — `cache`, `vector`, `sql`, `web` (default `false`) |
+| `force_route` | no | Override router, e.g. `"sql"` or `"cache"` (demo/testing) |
+| `use_critic` | no | Stage 15b: critic loop + retrieval retries (default `false`) |
+| `max_critic_attempts` | no | Max critic iterations including first try (default `2`, range 1–3) |
+| `use_eval` | no | Stage 15c: write RAG triad to `rag_query_metrics` (default `false`) |
 
 **Response (202 Accepted) — inline:**
 
@@ -788,8 +796,20 @@ Poll `GET /jobs/{job_id}` for the answer.
   "retrieve_k": 50,
   "keep_top_n": 3,
   "queries_used": ["How does Python asyncio work?", "...", "..."],
+  "route": "vector",
   "model": "all-MiniLM-L6-v2",
-  "observability": {}
+  "observability": {
+    "route": "vector",
+    "route_confidence": 0.58,
+    "critic_passed": true,
+    "critic_attempts": 1,
+    "triad": {
+      "context_relevance": 0.42,
+      "answer_relevance": 0.31,
+      "groundedness": 0.55
+    },
+    "stages": []
+  }
 }
 ```
 
@@ -924,6 +944,176 @@ You can also enqueue these job types through the generic jobs API:
 ```
 
 Chain steps use job types `query_expand`, `rerank`, `rag_retrieve`, and `rag_generate`. Prefer `POST /documents/ingest` and `POST /rag/query` — they create the document row, validate input, and wire the chain.
+
+### 6h. Stage 15 — Modular RAG (router, critic, eval, MCP)
+
+Stage 15 runs **inside** the same `rag_query` worker when you pass flags on `POST /rag/query` or `POST /rag/query/sync`. It does **not** replace Stage 14 — it wraps it.
+
+**Prerequisites (existing Postgres volume):**
+
+```bash
+docker compose exec -T postgres psql -U postgres -d ai_worker_platform \
+  < init-db/04-stage15-modular-rag.sql
+```
+
+Set MCP URL in `.env` / Compose (web route):
+
+```bash
+MCP_WEB_URL=http://localhost:8080/mcp
+```
+
+#### 6h.1 Full modular pipeline (sync demo)
+
+```
+POST /rag/query/sync
+Content-Type: application/json
+```
+
+```json
+{
+  "question": "How does Python asyncio work?",
+  "retrieve_k": 50,
+  "keep_top_n": 3,
+  "use_router": true,
+  "use_critic": true,
+  "max_critic_attempts": 2,
+  "use_eval": true
+}
+```
+
+```bash
+curl -X POST http://localhost:8000/rag/query/sync \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "How does Python asyncio work?",
+    "use_router": true,
+    "use_critic": true,
+    "use_eval": true
+  }'
+```
+
+Check `result_payload.observability` (async) or the sync response fields for `route`, `critic_passed`, `critic_attempts`, `triad`, and per-stage `stages[]`.
+
+#### 6h.2 Router — force each route
+
+| `force_route` | Example question | Expected behavior |
+|---------------|------------------|-------------------|
+| `"vector"` | `"How does asyncio work?"` | Stage 14 pipeline (expand → retrieve → …) |
+| `"sql"` | `"How many failed jobs?"` | Whitelist `COUNT(*)` on `jobs` table |
+| `"cache"` | repeat exact question | Hit `rag_answer_cache` after first successful vector answer |
+| `"web"` | `"What is the latest news?"` | MCP tool call via `McpToolCallHandler` |
+
+```bash
+# SQL route
+curl -X POST http://localhost:8000/rag/query/sync \
+  -H "Content-Type: application/json" \
+  -d '{"question":"How many pending jobs?","use_router":true,"force_route":"sql"}'
+
+# Cache route (run same question twice; second should be instant)
+curl -X POST http://localhost:8000/rag/query/sync \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is asyncio?","use_router":true,"use_eval":true}'
+# ... wait for completion, then run identical request again
+```
+
+#### 6h.3 Critic self-correction
+
+Enable retries when the first answer is weak (empty context, refusal phrases, low groundedness):
+
+```json
+{
+  "question": "Explain quantum entanglement in our handbook",
+  "use_router": false,
+  "use_critic": true,
+  "max_critic_attempts": 2,
+  "retrieve_k": 50
+}
+```
+
+On failure, observability shows `critic_attempt_1`, `retrieve_retry_1`, and updated strategy (`retrieve_k_boost`, `drop_metadata_filter`, etc.).
+
+#### 6h.4 Evaluation (RAG triad)
+
+With `"use_eval": true`, each completed vector-path query inserts a row into `rag_query_metrics`:
+
+| Metric | Meaning |
+|--------|---------|
+| `context_relevance` | Retrieved chunks relate to the question |
+| `answer_relevance` | Answer addresses the question |
+| `groundedness` | Answer tokens supported by context |
+
+Async: enable eval, poll job, then inspect admin dashboard:
+
+```bash
+curl -X POST http://localhost:8000/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is asyncio?","use_eval":true,"use_router":true}'
+
+# after job completes
+curl "http://localhost:8000/admin/rag/dashboard?window_hours=24&slow_k=5"
+```
+
+#### 6h.5 RAG admin dashboard
+
+```
+GET /admin/rag/dashboard?window_hours=24&grounding_threshold=0.25&slow_k=10
+```
+
+**Response (200):**
+
+```json
+{
+  "window_hours": 24,
+  "total_queries": 12,
+  "retrieve_hit_rate": 0.9167,
+  "rerank_lift_rate": 0.3333,
+  "failed_grounding_rate": 0.0833,
+  "avg_context_relevance": 0.2841,
+  "avg_answer_relevance": 0.1923,
+  "avg_groundedness": 0.4102,
+  "avg_latency_ms": 8421.5,
+  "route_counts": {"vector": 9, "sql": 2, "cache": 1},
+  "critic_pass_rate": 0.875,
+  "slowest_queries": [
+    {
+      "id": "...",
+      "job_id": "...",
+      "question": "How does asyncio work?",
+      "route": "vector",
+      "total_latency_ms": 12450.2,
+      "groundedness": 0.55,
+      "created_at": "2026-08-25T10:00:00Z"
+    }
+  ]
+}
+```
+
+#### 6h.6 Stage 15 job types (internal)
+
+These run inside `rag_query` or as standalone handlers; queues appear in `GET /health`:
+
+| Job type | Stage | Role |
+|----------|-------|------|
+| `route_query` | 15a | Router handler (usually inline in `rag_query`) |
+| `critic` | 15b | Answer quality gate |
+| `rag_eval` | 15c | Triad metrics (inline when `use_eval`) |
+| `mcp_tool_call` | 15d | External MCP web search |
+
+You can also enqueue modular RAG via generic jobs:
+
+```json
+{
+  "job_type": "rag_query",
+  "priority": "normal",
+  "input": {
+    "question": "How many failed jobs?",
+    "use_router": true,
+    "force_route": "sql",
+    "use_eval": true,
+    "mode": "inline"
+  }
+}
+```
 
 ---
 
@@ -1064,11 +1254,25 @@ GET /health
     "query_expand": 0,
     "rerank": 0,
     "rag_retrieve": 0,
-    "rag_generate": 0
+    "rag_generate": 0,
+    "route_query": 0,
+    "critic": 0,
+    "rag_eval": 0,
+    "mcp_tool_call": 0
   },
   "total_queued": 0
 }
 ```
+
+### RAG Dashboard (Stage 15 observability)
+
+```
+GET /admin/rag/dashboard?window_hours=24&grounding_threshold=0.25&slow_k=10
+```
+
+Sliding-window aggregates over `rag_query_metrics`: retrieval hit rate, rerank lift, failed grounding, route mix, critic pass rate, and slowest queries. Requires at least one query with `"use_eval": true`.
+
+**Response:** see section **6h.5**.
 
 `queues` = waiting Celery messages per job-type Redis list (not Postgres job counts). Completed jobs stay in PostgreSQL; they leave the Redis queue when a worker consumes the task.
 
@@ -1367,7 +1571,8 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 
 ## Notes
 
-- **Advanced RAG:** Ingest/query via `POST /documents/ingest` and `POST /rag/query` (or `/sync`) with `retrieve_k` / `keep_top_n`, `metadata_filter`, `use_multi_query`, `use_rerank`, `use_small_to_big`, and optional `use_chain` on async query. Existing DB volumes need `init-db/02-stage14-jobtype-enum.sql` once for new enum values.
+- **Advanced RAG:** Ingest/query via `POST /documents/ingest` and `POST /rag/query` (or `/sync`) with `retrieve_k` / `keep_top_n`, `metadata_filter`, `use_multi_query`, `use_rerank`, `use_small_to_big`, and optional `use_chain` on async query.
+- **Modular RAG (Stage 15):** Add `use_router`, `force_route`, `use_critic`, `max_critic_attempts`, `use_eval` on RAG endpoints. Monitor with `GET /admin/rag/dashboard`. DB migrations for existing volumes: `init-db/02-stage14-jobtype-enum.sql`, `init-db/03-stage15-chunk-hierarchy.sql`, `init-db/04-stage15-modular-rag.sql`.
 - **Compose:** `docker compose up -d`. Postgres is `pgvector/pgvector:pg16` with `CREATE EXTENSION vector`. Workers include `worker-ingestion` and `worker-rag-query`. First ingestion/RAG jobs download embedding (~80MB) and BART (~1.6GB) models.
 - **Kubernetes:** `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. Current manifests still deploy five workers and non-pgvector Postgres — update before using RAG on K8s. Scale: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
 - **Workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, ingestion by `worker-ingestion`, etc. Check `docker compose logs worker-<type>` or `kubectl logs -l worker-type=<type>` if a job stays `pending`.
@@ -1376,7 +1581,7 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 - **Transcription (file uploads)** uses **OpenAI Whisper** (`base`). Requires `ffmpeg` (in Docker image) and `openai-whisper`. Model caches per container. Duration via mutagen; result includes `source.engine: "whisper"`.
 - **Transcription (text-only)** with `input.text` + `duration` still uses the simulated sliding-window path (no Whisper).
 - **Recommendations** is purely algorithmic — no ML model, processes instantly.
-- **RAG** uses `all-MiniLM-L6-v2` for embeddings and BART for answer generation, plus expand/rerank/small-to-big. Prefer sync for demos; async inline for agents; `use_chain: true` for per-step jobs.
+- **RAG** uses `all-MiniLM-L6-v2` for embeddings and BART for answer generation, plus expand/rerank/small-to-big. Stage 15 adds router (cache/sql/web/vector), critic loop, eval triad, and MCP web client (`MCP_WEB_URL`). Prefer sync for demos; async inline for agents; `use_chain: true` for per-step jobs.
 - **File uploads** are stored under `uploads/` (hash-sharded; Docker volume `upload_data`). Same file uploaded twice is deduplicated by SHA-256.
 - **Rate limiting** applies to all endpoints (20 req/min per client IP by default). Configure via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
 - **Backpressure** — `POST /jobs`, `POST /uploads/job`, `POST /documents/ingest`, and `POST /rag/query` reject with 429 when pending job count exceeds `MAX_PENDING_JOBS_PER_USER` (default 50).

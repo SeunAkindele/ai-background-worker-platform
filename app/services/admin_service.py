@@ -10,6 +10,8 @@ from app.models.worker_heartbeat import WorkerHeartbeat, WorkerStatus
 from app.schemas.admin_schema import (
     DashboardResponse,
     JobTypeStats,
+    RagDashboardResponse,
+    RagSlowQuery,
     TopKJobResponse,
     WorkerHealthResponse,
     WorkerHeartbeatResponse,
@@ -156,6 +158,91 @@ class AdminService:
             return high + normal + low
         except Exception:
             return -1
+
+
+    async def async_get_rag_dashboard(
+        self,
+        db: AsyncSession,
+        *,
+        window_hours: int = 24,
+        grounding_threshold: float = 0.25,
+        slow_k: int = 10,
+    ) -> RagDashboardResponse:
+        """Aggregate RAG metrics over a sliding time window."""
+        from datetime import datetime, timedelta, timezone
+        from app.models.rag_eval import RagQueryMetric
+
+        since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+
+        stmt = select(
+            func.count(RagQueryMetric.id),
+            func.avg(RagQueryMetric.context_relevance),
+            func.avg(RagQueryMetric.answer_relevance),
+            func.avg(RagQueryMetric.groundedness),
+            func.avg(RagQueryMetric.total_latency_ms),
+            func.count(RagQueryMetric.id).filter(RagQueryMetric.retrieve_hit.is_(True)),
+            func.count(RagQueryMetric.id).filter(RagQueryMetric.rerank_changed_top1.is_(True)),
+            func.count(RagQueryMetric.id).filter(
+                RagQueryMetric.groundedness < grounding_threshold
+            ),
+            func.count(RagQueryMetric.id).filter(RagQueryMetric.critic_passed.is_(True)),
+            func.count(RagQueryMetric.id).filter(RagQueryMetric.critic_passed.is_not(None)),
+        ).where(RagQueryMetric.created_at >= since)
+
+        row = (await db.execute(stmt)).one()
+        (
+            total, avg_cr, avg_ar, avg_gr, avg_lat,
+            hits, rerank_lift, failed_ground, critic_pass, critic_total,
+        ) = row
+
+        def rate(n, d):
+            return round(n / d, 4) if d else None
+
+        # route distribution
+        route_stmt = (
+            select(RagQueryMetric.route, func.count(RagQueryMetric.id))
+            .where(RagQueryMetric.created_at >= since)
+            .group_by(RagQueryMetric.route)
+        )
+        route_counts = {r: int(c) for r, c in (await db.execute(route_stmt)).all()}
+
+        slow_stmt = (
+            select(RagQueryMetric)
+            .where(
+                RagQueryMetric.created_at >= since,
+                RagQueryMetric.total_latency_ms.is_not(None),
+            )
+            .order_by(RagQueryMetric.total_latency_ms.desc())
+            .limit(slow_k)
+        )
+        slow_rows = (await db.execute(slow_stmt)).scalars().all()
+        slowest = [
+            RagSlowQuery(
+                id=r.id,
+                job_id=r.job_id,
+                question=r.question[:200],
+                route=r.route,
+                total_latency_ms=r.total_latency_ms,
+                groundedness=r.groundedness,
+                created_at=r.created_at,
+            )
+            for r in slow_rows
+        ]
+
+        return RagDashboardResponse(
+            window_hours=window_hours,
+            total_queries=int(total or 0),
+            retrieve_hit_rate=rate(hits or 0, total or 0),
+            rerank_lift_rate=rate(rerank_lift or 0, total or 0),
+            failed_grounding_rate=rate(failed_ground or 0, total or 0),
+            avg_context_relevance=round(float(avg_cr), 4) if avg_cr is not None else None,
+            avg_answer_relevance=round(float(avg_ar), 4) if avg_ar is not None else None,
+            avg_groundedness=round(float(avg_gr), 4) if avg_gr is not None else None,
+            avg_latency_ms=round(float(avg_lat), 2) if avg_lat is not None else None,
+            route_counts=route_counts,
+            critic_pass_rate=rate(critic_pass or 0, critic_total or 0),
+            slowest_queries=slowest,
+        )
 
 
 admin_service = AdminService()

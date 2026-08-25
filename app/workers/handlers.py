@@ -60,6 +60,22 @@ def _create_handler(job_type: JobType) -> BaseJobHandler:
         from app.workers.rag_step_handlers import RagGenerateHandler
         return RagGenerateHandler()
 
+    elif job_type == JobType.ROUTE_QUERY:
+        from app.workers.router_worker import RouterHandler
+        return RouterHandler()
+
+    elif job_type == JobType.CRITIC:
+        from app.workers.critic_worker import CriticHandler
+        return CriticHandler()
+
+    elif job_type == JobType.RAG_EVAL:
+        from app.workers.rag_eval_worker import RagEvalHandler
+        return RagEvalHandler()
+
+    elif job_type == JobType.MCP_TOOL_CALL:
+        from app.workers.mcp_worker import McpToolCallHandler
+        return McpToolCallHandler()
+
     raise ValueError(f"No handler registered for job type: {job_type}")
 
 

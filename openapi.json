@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AI Background Worker Platform",
-    "version": "0.14.0"
+    "version": "0.15.0"
   },
   "paths": {
     "/jobs": {
@@ -553,6 +553,76 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WorkerHealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/rag/dashboard": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Rag Dashboard",
+        "description": "RAG observability: triad averages, route mix, critic pass rate, and slowest queries.",
+        "operationId": "rag_dashboard_admin_rag_dashboard_get",
+        "parameters": [
+          {
+            "name": "window_hours",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 720,
+              "minimum": 1,
+              "default": 24,
+              "title": "Window Hours"
+            }
+          },
+          {
+            "name": "grounding_threshold",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "default": 0.25,
+              "title": "Grounding Threshold"
+            }
+          },
+          {
+            "name": "slow_k",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 10,
+              "title": "Slow K"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RagDashboardResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1503,7 +1573,11 @@
           "query_expand",
           "rerank",
           "rag_retrieve",
-          "rag_generate"
+          "rag_generate",
+          "route_query",
+          "critic",
+          "rag_eval",
+          "mcp_tool_call"
         ],
         "title": "JobType"
       },
@@ -1546,6 +1620,158 @@
           "debug"
         ],
         "title": "LogLevel"
+      },
+      "RagDashboardResponse": {
+        "properties": {
+          "window_hours": {
+            "type": "integer",
+            "title": "Window Hours"
+          },
+          "total_queries": {
+            "type": "integer",
+            "title": "Total Queries"
+          },
+          "retrieve_hit_rate": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Retrieve Hit Rate"
+          },
+          "rerank_lift_rate": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Rerank Lift Rate"
+          },
+          "failed_grounding_rate": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Failed Grounding Rate"
+          },
+          "avg_context_relevance": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Avg Context Relevance"
+          },
+          "avg_answer_relevance": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Avg Answer Relevance"
+          },
+          "avg_groundedness": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Avg Groundedness"
+          },
+          "avg_latency_ms": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Avg Latency Ms"
+          },
+          "route_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Route Counts"
+          },
+          "critic_pass_rate": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Critic Pass Rate"
+          },
+          "slowest_queries": {
+            "items": {
+              "$ref": "#/components/schemas/RagSlowQuery"
+            },
+            "type": "array",
+            "title": "Slowest Queries"
+          }
+        },
+        "type": "object",
+        "required": [
+          "window_hours",
+          "total_queries",
+          "retrieve_hit_rate",
+          "rerank_lift_rate",
+          "failed_grounding_rate",
+          "avg_context_relevance",
+          "avg_answer_relevance",
+          "avg_groundedness",
+          "avg_latency_ms",
+          "route_counts",
+          "critic_pass_rate",
+          "slowest_queries"
+        ],
+        "title": "RagDashboardResponse"
+      },
+      "RagSlowQuery": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {"type": "string", "format": "uuid"},
+              {"type": "null"}
+            ],
+            "title": "Job Id"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "route": {
+            "type": "string",
+            "title": "Route"
+          },
+          "total_latency_ms": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Total Latency Ms"
+          },
+          "groundedness": {
+            "anyOf": [
+              {"type": "number"},
+              {"type": "null"}
+            ],
+            "title": "Groundedness"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_id",
+          "question",
+          "route",
+          "total_latency_ms",
+          "groundedness",
+          "created_at"
+        ],
+        "title": "RagSlowQuery"
       },
       "RAGQueryRequest": {
         "properties": {
@@ -1627,6 +1853,44 @@
           "use_chain": {
             "type": "boolean",
             "title": "Use Chain",
+            "default": false
+          },
+          "use_router": {
+            "type": "boolean",
+            "title": "Use Router",
+            "description": "Route to cache, vector, SQL, or web before answering",
+            "default": false
+          },
+          "force_route": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["cache", "vector", "sql", "web"]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force Route",
+            "description": "Override router decision for demos/tests"
+          },
+          "use_critic": {
+            "type": "boolean",
+            "title": "Use Critic",
+            "description": "Enable critic self-correction with retrieval retries",
+            "default": false
+          },
+          "max_critic_attempts": {
+            "type": "integer",
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Max Critic Attempts",
+            "default": 2
+          },
+          "use_eval": {
+            "type": "boolean",
+            "title": "Use Eval",
+            "description": "Persist RAG triad metrics to rag_query_metrics",
             "default": false
           }
         },

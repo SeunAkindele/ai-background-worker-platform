@@ -9,6 +9,7 @@ from app.schemas.admin_schema import (
     DashboardResponse,
     JobLogListResponse,
     JobLogResponse,
+    RagDashboardResponse,
     TopKJobResponse,
     WorkerHealthResponse,
 )
@@ -72,3 +73,20 @@ async def worker_health(
     _client: str = Depends(enforce_rate_limit),
 ):
     return await admin_service.async_get_worker_health(db)
+
+
+@router.get("/rag/dashboard", response_model=RagDashboardResponse)
+async def rag_dashboard(
+    window_hours: int = Query(24, ge=1, le=24 * 30),
+    grounding_threshold: float = Query(0.25, ge=0.0, le=1.0),
+    slow_k: int = Query(10, ge=1, le=50),
+    db: AsyncSession = Depends(get_async_db),
+    _client: str = Depends(enforce_rate_limit),
+):
+    return await admin_service.async_get_rag_dashboard(
+        db,
+        window_hours=window_hours,
+        grounding_threshold=grounding_threshold,
+        slow_k=slow_k,
+    )
+    

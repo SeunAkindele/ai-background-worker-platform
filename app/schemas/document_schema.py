@@ -69,6 +69,14 @@ class RAGQueryRequest(BaseModel):
     use_rerank: bool = True
     use_small_to_big: bool = True
     use_chain: bool = False
+    use_router: bool = False
+    force_route: str | None = Field(
+        default=None,
+        description='Override router: "cache", "vector", "sql", or "web"',
+    )
+    use_critic: bool = False
+    max_critic_attempts: int = Field(default=2, ge=1, le=3)
+    use_eval: bool = False
 
 
 class RAGQueryResponse(BaseModel):

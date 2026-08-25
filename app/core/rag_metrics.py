@@ -31,6 +31,13 @@ class RAGTrace:
     biencoder_top1_similarity: float | None = None
     reranker_top1_score: float | None = None
 
+    route: str | None = None
+    route_confidence: float | None = None
+    critic_passed: bool | None = None
+    critic_attempts: int = 1
+    critic_reasons: list[str] = field(default_factory=list)
+    triad: dict[str, float] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
