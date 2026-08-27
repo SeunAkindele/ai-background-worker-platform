@@ -26,7 +26,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: pgvector/pgvector:pg16
           ports:
             - containerPort: 5432
           env:
@@ -45,9 +45,23 @@ spec:
                 secretKeyRef:
                   name: app-secrets
                   key: POSTGRES_DB
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    until pg_isready -U postgres -d ai_worker_platform; do sleep 1; done
+                    psql -U postgres -d ai_worker_platform -c "CREATE EXTENSION IF NOT EXISTS vector;"
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "postgres", "-d", "ai_worker_platform"]
@@ -64,11 +78,14 @@ spec:
               memory: "256Mi"
             limits:
               cpu: "500m"
-              memory: "512Mi"
+              memory: "1Gi"
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: postgres-pvc
+        - name: initdb
+          configMap:
+            name: postgres-init
 ---
 apiVersion: v1
 kind: Service

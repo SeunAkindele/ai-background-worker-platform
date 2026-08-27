@@ -4,6 +4,7 @@ x-worker-env: &worker-env
   REDIS_URL: redis://redis:6379/0
   APP_ENV: development
   UPLOAD_DIR: /app/uploads
+  MCP_WEB_URL: http://host.docker.internal:8080/mcp
 
 x-worker-common: &worker-common
   image: ai-worker-platform:latest
@@ -67,6 +68,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       APP_ENV: development
       UPLOAD_DIR: /app/uploads
+      MCP_WEB_URL: http://host.docker.internal:8080/mcp
     volumes:
       - upload_data:/app/uploads
     depends_on:

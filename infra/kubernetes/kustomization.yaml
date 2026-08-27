@@ -6,8 +6,10 @@ resources:
   - configmap.yaml
   - secret.yaml
   - pvc-uploads.yaml
+  - postgres-init-configmap.yaml
   - postgres.yaml
   - redis.yaml
   - api.yaml
   - workers.yaml
+  - workers-rag.yaml
   - hpa.yaml

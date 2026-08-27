@@ -6,7 +6,7 @@ Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` 
 >
 > **Modular RAG — Stage 15 (Compose):** Enable on `POST /rag/query` or `POST /rag/query/sync` with flags: `use_router` (cache | vector | sql | web), `use_critic` + `max_critic_attempts` (self-correction loop), `use_eval` (persist RAG triad to `rag_query_metrics`). Web route calls external MCP via `MCP_WEB_URL`. Inspect quality with `GET /admin/rag/dashboard`. Apply `init-db/04-stage15-modular-rag.sql` on existing DB volumes.
 >
-> **Deployments:** With `docker compose up`, workers share the **same image**; jobs route to a Redis queue named after `job_type`, with `priority` ordering inside that queue (Celery integers 0 / 5 / 9). Kubernetes (`kubectl apply -k infra/kubernetes/`) exposes the API on NodePort `30080` with readiness via `GET /ready`; current manifests deploy a smaller worker set than Compose (update before relying on RAG on K8s).
+> **Deployments:** With `docker compose up`, workers share the **same image**; jobs route to a Redis queue named after `job_type`, with `priority` ordering inside that queue (Celery integers 0 / 5 / 9). Kubernetes (`kubectl apply -k infra/kubernetes/`) exposes the API on NodePort `30080` with readiness via `GET /ready`. Manifests deploy the same seven worker types as Compose, pgvector Postgres, and RAG queues on `worker-rag-query`.
 
 ---
 
@@ -1398,7 +1398,7 @@ GET /admin/slowest-jobs?k=10
 GET /admin/workers
 ```
 
-Compose typically runs **seven** workers (one per primary type), each with `worker_type` from `WORKER_TYPE`. Chain step queues (`query_expand`, `rerank`, `rag_retrieve`, `rag_generate`) exist even without a dedicated Deployment per step. Current Kubernetes manifests still deploy five workers until updated for RAG.
+Compose typically runs **seven** workers (one per primary type), each with `worker_type` from `WORKER_TYPE`. Kubernetes deploys the same set. The RAG worker also consumes chain and modular queues (`query_expand`, `rerank`, `rag_retrieve`, `rag_generate`, `route_query`, `critic`, `rag_eval`, `mcp_tool_call`).
 
 **Response:**
 
@@ -1574,7 +1574,7 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 - **Advanced RAG:** Ingest/query via `POST /documents/ingest` and `POST /rag/query` (or `/sync`) with `retrieve_k` / `keep_top_n`, `metadata_filter`, `use_multi_query`, `use_rerank`, `use_small_to_big`, and optional `use_chain` on async query.
 - **Modular RAG (Stage 15):** Add `use_router`, `force_route`, `use_critic`, `max_critic_attempts`, `use_eval` on RAG endpoints. Monitor with `GET /admin/rag/dashboard`. DB migrations for existing volumes: `init-db/02-stage14-jobtype-enum.sql`, `init-db/03-stage15-chunk-hierarchy.sql`, `init-db/04-stage15-modular-rag.sql`.
 - **Compose:** `docker compose up -d`. Postgres is `pgvector/pgvector:pg16` with `CREATE EXTENSION vector`. Workers include `worker-ingestion` and `worker-rag-query`. First ingestion/RAG jobs download embedding (~80MB) and BART (~1.6GB) models.
-- **Kubernetes:** `kubectl apply -k infra/kubernetes/`. API at NodePort `30080` or via port-forward. Current manifests still deploy five workers and non-pgvector Postgres — update before using RAG on K8s. Scale: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
+- **Kubernetes:** `kubectl apply -k infra/kubernetes/` after loading `ai-worker-platform:latest` into the cluster. API at NodePort `30080` or via port-forward. Workers match Compose, including `worker-ingestion` and `worker-rag-query`. Postgres uses `pgvector/pgvector:pg16`. Scale: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
 - **Workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, ingestion by `worker-ingestion`, etc. Check `docker compose logs worker-<type>` or `kubectl logs -l worker-type=<type>` if a job stays `pending`.
 - **Summarization** and **Embeddings** download ML models on first use (~1.6GB and ~80MB). First job on that worker container is slow.
 - **OCR** requires Tesseract (installed in the Docker runtime image). Without it locally, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.

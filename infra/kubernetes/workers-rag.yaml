@@ -1,0 +1,104 @@
+# RAG workers — same image as Compose worker-ingestion / worker-rag-query.
+# rag-query also consumes chain + modular job queues so use_chain and
+# standalone route/critic/eval/mcp jobs do not sit pending.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-ingestion
+  namespace: ai-worker-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+      worker-type: ingestion
+  template:
+    metadata:
+      labels:
+        app: worker
+        worker-type: ingestion
+    spec:
+      containers:
+        - name: worker
+          image: ai-worker-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args:
+            - "-A"
+            - "app.workers.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "--pool=solo"
+            - "--queues=ingestion"
+            - "--hostname=ingestion@%h"
+          env:
+            - name: WORKER_TYPE
+              value: ingestion
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "celery"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-rag-query
+  namespace: ai-worker-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+      worker-type: rag-query
+  template:
+    metadata:
+      labels:
+        app: worker
+        worker-type: rag-query
+    spec:
+      containers:
+        - name: worker
+          image: ai-worker-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args:
+            - "-A"
+            - "app.workers.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "--pool=solo"
+            - "--queues=rag_query,query_expand,rerank,rag_retrieve,rag_generate,route_query,critic,rag_eval,mcp_tool_call"
+            - "--hostname=rag_query@%h"
+          env:
+            - name: WORKER_TYPE
+              value: rag_query
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "celery"]
+            initialDelaySeconds: 45
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"

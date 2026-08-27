@@ -11,7 +11,11 @@ class Base(DeclarativeBase):
     ...
 
 
-engine = create_engine(settings.database_url, echo=settings.app_env == "development")
+engine = create_engine(
+    settings.database_url,
+    echo=settings.app_env == "development",
+    pool_pre_ping=True,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
@@ -47,6 +51,7 @@ async_engine = create_async_engine(
     echo=settings.app_env == "development",
     pool_size=20,
     max_overflow=10,
+    pool_pre_ping=True,
 )
 AsyncSessionLocal = async_sessionmaker(
     bind=async_engine, class_=AsyncSession, expire_on_commit=False

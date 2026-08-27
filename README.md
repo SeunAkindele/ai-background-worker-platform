@@ -31,7 +31,8 @@ docker compose up
 - **Optional Celery chain** — `use_chain: true` on `POST /rag/query` runs expand → retrieve → rerank → generate as step jobs
 - **RAG observability** — per-step timings in `result_payload.observability`; admin dashboard at `/admin/rag/dashboard`
 - **Document ingest** — parent/child chunking into pgvector; `GET /documents/{id}/chunks` exposes `level` / `parent_chunk_id`
-- **Job platform** — async FastAPI, uploads, rate limiting, admin controls (Compose-first for RAG)
+- **Job platform** — async FastAPI, uploads, rate limiting, admin controls
+- **Kubernetes** — Compose-parity workers (including ingestion + RAG), pgvector Postgres, NodePort `30080`
 
 ## Quick start
 
@@ -88,6 +89,38 @@ curl "http://localhost:8000/admin/rag/dashboard?window_hours=24&slow_k=5"
 Set `MCP_WEB_URL` in `.env` for the web route (Stage 15d).
 
 Stop with `docker compose down` (add `-v` to remove volumes). Run `pytest` for tests.
+
+## Kubernetes
+
+Manifests in `infra/kubernetes/` match Compose: pgvector Postgres, Redis, API, seven workers (summarization, embeddings, OCR, transcription, recommendations, ingestion, RAG), and HPAs.
+
+```bash
+docker build -t ai-worker-platform:latest .
+
+# Kind
+kind load docker-image ai-worker-platform:latest
+
+# Minikube
+minikube image load ai-worker-platform:latest
+
+kubectl apply -k infra/kubernetes/
+kubectl -n ai-worker-platform rollout status deploy/api
+```
+
+- API: `http://localhost:30080` (NodePort) or `kubectl -n ai-worker-platform port-forward svc/api 8000:8000`
+- Fresh clusters get `CREATE EXTENSION vector` from `init-db/01-extensions.sql` plus a Postgres postStart hook
+- Existing Postgres PVCs that predate RAG still need:
+
+```bash
+kubectl -n ai-worker-platform exec -i deploy/postgres -- \
+  psql -U postgres -d ai_worker_platform < init-db/02-stage14-jobtype-enum.sql
+kubectl -n ai-worker-platform exec -i deploy/postgres -- \
+  psql -U postgres -d ai_worker_platform < init-db/03-stage15-chunk-hierarchy.sql
+kubectl -n ai-worker-platform exec -i deploy/postgres -- \
+  psql -U postgres -d ai_worker_platform < init-db/04-stage15-modular-rag.sql
+```
+
+Scale a worker: `kubectl -n ai-worker-platform scale deployment worker-rag-query --replicas=2`
 
 ## Evolution
 

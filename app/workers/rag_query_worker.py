@@ -609,15 +609,12 @@ class RAGQueryHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def _generate_answer(self, prompt: str) -> str:
         """Generate an answer from the grounded prompt via the local summarization model."""
         pipe = self._get_summarization_pipeline()
-
-        words = prompt.split()
-        if len(words) > 900:
-            prompt = " ".join(words[:900])
-
+        # BART max positions is 1024 tokens; word-count trim is not enough.
         result = pipe(
             prompt,
             max_length=200,
             min_length=30,
             do_sample=False,
+            truncation=True,
         )
         return result[0]["summary_text"]
