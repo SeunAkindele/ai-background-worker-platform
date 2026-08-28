@@ -9,4 +9,4 @@ data:
   RATE_LIMIT_REQUESTS: "20"
   RATE_LIMIT_WINDOW_SECONDS: "60"
   MAX_PENDING_JOBS_PER_USER: "50"
-  MCP_WEB_URL: "http://localhost:8080/mcp"
+  MCP_WEB_URL: "http://mcp-web:8080/mcp"

@@ -88,12 +88,16 @@ class RAGQueryResponse(BaseModel):
 
 
 class RAGSourceResponse(BaseModel):
-    chunk_id: str
-    document_id: str
-    document_title: str
-    chunk_index: int
-    similarity: float
-    text_preview: str
+    """Vector-chunk citation, or a web/SQL hit (extra fields allowed)."""
+    model_config = {"extra": "allow"}
+    chunk_id: str | None = None
+    document_id: str | None = None
+    document_title: str | None = None
+    chunk_index: int | None = None
+    similarity: float | None = None
+    text_preview: str | None = None
+    title: str | None = None
+    url: str | None = None
 
 
 class RAGQuerySyncResponse(BaseModel):
@@ -103,6 +107,7 @@ class RAGQuerySyncResponse(BaseModel):
     chunks_retrieved: int
     top_k_requested: int | None = None
     model: str | None = None
+    route: str | None = None
 
 
 class ChunkResponse(BaseModel):

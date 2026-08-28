@@ -581,7 +581,7 @@ class RAGQueryHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
     def _build_prompt(self, question: str, chunks: list[dict[str, Any]]) -> str:
         """Pack ranked sources into a prompt within a rough word budget."""
-        max_context_words = 700
+        max_context_words = 400
         parts: list[str] = []
         used = 0
         for i, chunk in enumerate(chunks, 1):
@@ -609,7 +609,17 @@ class RAGQueryHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def _generate_answer(self, prompt: str) -> str:
         """Generate an answer from the grounded prompt via the local summarization model."""
         pipe = self._get_summarization_pipeline()
-        # BART max positions is 1024 tokens; word-count trim is not enough.
+        tokenizer = pipe.tokenizer
+        # BART position embeddings are 1024 with offset=2; truncation=True on the
+        # pipeline still encodes sequences that overflow embed_positions.
+        max_input = 900
+        encoded = tokenizer(
+            prompt,
+            truncation=True,
+            max_length=max_input,
+            add_special_tokens=True,
+        )
+        prompt = tokenizer.decode(encoded["input_ids"], skip_special_tokens=True)
         result = pipe(
             prompt,
             max_length=200,

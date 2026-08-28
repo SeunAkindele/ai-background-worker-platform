@@ -4,7 +4,7 @@ x-worker-env: &worker-env
   REDIS_URL: redis://redis:6379/0
   APP_ENV: development
   UPLOAD_DIR: /app/uploads
-  MCP_WEB_URL: http://host.docker.internal:8080/mcp
+  MCP_WEB_URL: http://mcp-web:8080/mcp
 
 x-worker-common: &worker-common
   image: ai-worker-platform:latest
@@ -15,6 +15,8 @@ x-worker-common: &worker-common
     postgres:
       condition: service_healthy
     redis:
+      condition: service_healthy
+    mcp-web:
       condition: service_healthy
 
 
@@ -68,7 +70,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       APP_ENV: development
       UPLOAD_DIR: /app/uploads
-      MCP_WEB_URL: http://host.docker.internal:8080/mcp
+      MCP_WEB_URL: http://mcp-web:8080/mcp
     volumes:
       - upload_data:/app/uploads
     depends_on:
@@ -76,6 +78,31 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mcp-web:
+        condition: service_healthy
+
+  mcp-web:
+    image: ai-worker-platform:latest
+    build: .
+    container_name: ai_worker_mcp_web
+    restart: unless-stopped
+    command: >
+      uvicorn app.mcp_web_server:app
+      --host 0.0.0.0
+      --port 8080
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # One Celery service per job type; same image, different --queues / WORKER_TYPE.
   worker-summarization:

@@ -8,6 +8,7 @@ A backend platform for submitting, queuing, and processing AI background jobs �
 docker compose up
   │
   ├── postgres (pgvector) / redis
+  ├── mcp-web :8080                POST /mcp  (web_search via Wikipedia)
   ├── api :8000
   │      POST /documents/ingest     → parent+child chunks + ingestion job
   │      POST /rag/query            → inline rag_query OR Celery chain (use_chain)
@@ -32,7 +33,7 @@ docker compose up
 - **RAG observability** — per-step timings in `result_payload.observability`; admin dashboard at `/admin/rag/dashboard`
 - **Document ingest** — parent/child chunking into pgvector; `GET /documents/{id}/chunks` exposes `level` / `parent_chunk_id`
 - **Job platform** — async FastAPI, uploads, rate limiting, admin controls
-- **Kubernetes** — Compose-parity workers (including ingestion + RAG), pgvector Postgres, NodePort `30080`
+- **Kubernetes** — Compose-parity workers (including ingestion + RAG), pgvector Postgres, `mcp-web`, NodePort `30080`
 
 ## Quick start
 
@@ -82,17 +83,22 @@ curl -X POST http://localhost:8000/rag/query/sync \
   -H "Content-Type: application/json" \
   -d '{"question":"How many pending jobs?","use_router":true,"force_route":"sql"}'
 
+# Web route (Compose mcp-web → Wikipedia; needs outbound HTTPS)
+curl -X POST http://localhost:8000/rag/query/sync \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is the latest news about AI?","use_router":true,"force_route":"web"}'
+
 # RAG admin dashboard (after queries with use_eval)
 curl "http://localhost:8000/admin/rag/dashboard?window_hours=24&slow_k=5"
 ```
 
-Set `MCP_WEB_URL` in `.env` for the web route (Stage 15d).
+Compose starts `mcp-web` on port 8080 (`POST /mcp`). API and workers use `MCP_WEB_URL=http://mcp-web:8080/mcp`. For local (non-Docker) API, point `MCP_WEB_URL` at `http://localhost:8080/mcp`.
 
 Stop with `docker compose down` (add `-v` to remove volumes). Run `pytest` for tests.
 
 ## Kubernetes
 
-Manifests in `infra/kubernetes/` match Compose: pgvector Postgres, Redis, API, seven workers (summarization, embeddings, OCR, transcription, recommendations, ingestion, RAG), and HPAs.
+Manifests in `infra/kubernetes/` match Compose: pgvector Postgres, Redis, MCP web search, API, seven workers (summarization, embeddings, OCR, transcription, recommendations, ingestion, RAG), and HPAs.
 
 ```bash
 docker build -t ai-worker-platform:latest .

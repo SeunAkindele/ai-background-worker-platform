@@ -9,6 +9,7 @@ resources:
   - postgres-init-configmap.yaml
   - postgres.yaml
   - redis.yaml
+  - mcp-web.yaml
   - api.yaml
   - workers.yaml
   - workers-rag.yaml

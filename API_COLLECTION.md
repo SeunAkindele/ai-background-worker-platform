@@ -4,9 +4,9 @@ Base URL: `http://localhost:8000` (Compose / local) or `http://localhost:30080` 
 
 > **Advanced RAG (Compose):** Multi-query expand, metadata filters, cross-encoder rerank, small-to-big parent/child chunks, and optional Celery chain mode (`use_chain: true` on `POST /rag/query`). Chain step job types: `query_expand`, `rerank`, `rag_retrieve`, `rag_generate`. Chunk list responses include `level` / `parent_chunk_id`. Compose runs dedicated workers per primary job type (including `ingestion` and `rag_query`) against Postgres with **pgvector**.
 >
-> **Modular RAG — Stage 15 (Compose):** Enable on `POST /rag/query` or `POST /rag/query/sync` with flags: `use_router` (cache | vector | sql | web), `use_critic` + `max_critic_attempts` (self-correction loop), `use_eval` (persist RAG triad to `rag_query_metrics`). Web route calls external MCP via `MCP_WEB_URL`. Inspect quality with `GET /admin/rag/dashboard`. Apply `init-db/04-stage15-modular-rag.sql` on existing DB volumes.
+> **Modular RAG — Stage 15 (Compose):** Enable on `POST /rag/query` or `POST /rag/query/sync` with flags: `use_router` (cache | vector | sql | web), `use_critic` + `max_critic_attempts` (self-correction loop), `use_eval` (persist RAG triad to `rag_query_metrics`). Web route calls the Compose `mcp-web` service (`MCP_WEB_URL=http://mcp-web:8080/mcp`) which exposes JSON-RPC `web_search` (Wikipedia). Inspect quality with `GET /admin/rag/dashboard`. Apply `init-db/04-stage15-modular-rag.sql` on existing DB volumes.
 >
-> **Deployments:** With `docker compose up`, workers share the **same image**; jobs route to a Redis queue named after `job_type`, with `priority` ordering inside that queue (Celery integers 0 / 5 / 9). Kubernetes (`kubectl apply -k infra/kubernetes/`) exposes the API on NodePort `30080` with readiness via `GET /ready`. Manifests deploy the same seven worker types as Compose, pgvector Postgres, and RAG queues on `worker-rag-query`.
+> **Deployments:** With `docker compose up`, workers share the **same image**; jobs route to a Redis queue named after `job_type`, with `priority` ordering inside that queue (Celery integers 0 / 5 / 9). Kubernetes (`kubectl apply -k infra/kubernetes/`) exposes the API on NodePort `30080` with readiness via `GET /ready`. Manifests deploy the same seven worker types as Compose, pgvector Postgres, `mcp-web`, and RAG queues on `worker-rag-query`.
 
 ---
 
@@ -956,10 +956,10 @@ docker compose exec -T postgres psql -U postgres -d ai_worker_platform \
   < init-db/04-stage15-modular-rag.sql
 ```
 
-Set MCP URL in `.env` / Compose (web route):
+Compose starts `mcp-web` at `http://localhost:8080/mcp` (JSON-RPC `tools/list` and `tools/call` for `web_search`). Inside the stack, API and workers use:
 
 ```bash
-MCP_WEB_URL=http://localhost:8080/mcp
+MCP_WEB_URL=http://mcp-web:8080/mcp
 ```
 
 #### 6h.1 Full modular pipeline (sync demo)
@@ -1008,6 +1008,11 @@ Check `result_payload.observability` (async) or the sync response fields for `ro
 curl -X POST http://localhost:8000/rag/query/sync \
   -H "Content-Type: application/json" \
   -d '{"question":"How many pending jobs?","use_router":true,"force_route":"sql"}'
+
+# Web route (mcp-web → Wikipedia)
+curl -X POST http://localhost:8000/rag/query/sync \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is the latest news about AI?","use_router":true,"force_route":"web"}'
 
 # Cache route (run same question twice; second should be instant)
 curl -X POST http://localhost:8000/rag/query/sync \
@@ -1574,7 +1579,7 @@ Requests 1-20 return `200`, requests 21+ return `429`.
 - **Advanced RAG:** Ingest/query via `POST /documents/ingest` and `POST /rag/query` (or `/sync`) with `retrieve_k` / `keep_top_n`, `metadata_filter`, `use_multi_query`, `use_rerank`, `use_small_to_big`, and optional `use_chain` on async query.
 - **Modular RAG (Stage 15):** Add `use_router`, `force_route`, `use_critic`, `max_critic_attempts`, `use_eval` on RAG endpoints. Monitor with `GET /admin/rag/dashboard`. DB migrations for existing volumes: `init-db/02-stage14-jobtype-enum.sql`, `init-db/03-stage15-chunk-hierarchy.sql`, `init-db/04-stage15-modular-rag.sql`.
 - **Compose:** `docker compose up -d`. Postgres is `pgvector/pgvector:pg16` with `CREATE EXTENSION vector`. Workers include `worker-ingestion` and `worker-rag-query`. First ingestion/RAG jobs download embedding (~80MB) and BART (~1.6GB) models.
-- **Kubernetes:** `kubectl apply -k infra/kubernetes/` after loading `ai-worker-platform:latest` into the cluster. API at NodePort `30080` or via port-forward. Workers match Compose, including `worker-ingestion` and `worker-rag-query`. Postgres uses `pgvector/pgvector:pg16`. Scale: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
+- **Kubernetes:** `kubectl apply -k infra/kubernetes/` after loading `ai-worker-platform:latest` into the cluster. API at NodePort `30080` or via port-forward. Workers match Compose, including `worker-ingestion` and `worker-rag-query`. Postgres uses `pgvector/pgvector:pg16`. `mcp-web` serves `POST /mcp` at `http://mcp-web:8080/mcp`. Scale: `kubectl -n ai-worker-platform scale deployment worker-ocr --replicas=2`.
 - **Workers:** OCR jobs are only consumed by `worker-ocr`, summarization by `worker-summarization`, ingestion by `worker-ingestion`, etc. Check `docker compose logs worker-<type>` or `kubectl logs -l worker-type=<type>` if a job stays `pending`.
 - **Summarization** and **Embeddings** download ML models on first use (~1.6GB and ~80MB). First job on that worker container is slow.
 - **OCR** requires Tesseract (installed in the Docker runtime image). Without it locally, returns simulated output. Supports file uploads via `POST /uploads` with `purpose=ocr`.

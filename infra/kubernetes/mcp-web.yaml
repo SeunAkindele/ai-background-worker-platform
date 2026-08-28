@@ -1,0 +1,60 @@
+# MCP HTTP server for Stage 15 web route (tools/list + tools/call web_search).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-web
+  namespace: ai-worker-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-web
+  template:
+    metadata:
+      labels:
+        app: mcp-web
+    spec:
+      containers:
+        - name: mcp-web
+          image: ai-worker-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn"]
+          args:
+            - "app.mcp_web_server:app"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-web
+  namespace: ai-worker-platform
+spec:
+  selector:
+    app: mcp-web
+  ports:
+    - port: 8080
+      targetPort: 8080

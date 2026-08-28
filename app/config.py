@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     upload_chunk_size: int = 8192  # 8 KB — classic buffer size
 
     # Optional Stage 15 web route; stack boots without an MCP server.
-    mcp_web_url: str = "http://host.docker.internal:8080/mcp"
+    mcp_web_url: str = "http://mcp-web:8080/mcp"
 
     # Asynchronous database URL property
     @property

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
+from app.config import settings
 from app.core.mcp_client import McpClient, McpClientError
 from app.core.rag_metrics import RAGTrace, trace_stage
 from app.workers.base import BaseJobHandler
@@ -22,11 +22,7 @@ class McpToolCallHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
     def process(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         question = input_payload.get("question", "")
         tool_name = input_payload.get("tool_name", "web_search")
-        mcp_url = (
-            input_payload.get("mcp_url")
-            or os.getenv("MCP_WEB_URL")
-            or "http://localhost:8080/mcp"
-        )
+        mcp_url = input_payload.get("mcp_url") or settings.mcp_web_url
         arguments = input_payload.get("arguments") or {"query": question}
 
         trace = RAGTrace(question=question or str(arguments))
@@ -79,6 +75,9 @@ class McpToolCallHandler(BaseJobHandler[dict[str, Any], dict[str, Any]]):
 
     def _normalize_snippets(self, raw: Any) -> list[dict[str, Any]]:
         """Normalize heterogeneous MCP payloads to a common source shape."""
+        if isinstance(raw, dict) and isinstance(raw.get("hits"), list) and raw["hits"]:
+            return self._normalize_snippets(raw["hits"])
+
         if isinstance(raw, dict) and "content" in raw:
             texts = [
                 c.get("text", "")
